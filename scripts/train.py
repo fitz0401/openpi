@@ -27,6 +27,8 @@ import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
 
+# import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def init_logging():
     """Custom logging format for better readability."""
