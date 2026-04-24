@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import os
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -173,6 +174,8 @@ class DataConfigFactory(abc.ABC):
     repo_id: str = tyro.MISSING
     # Optional local root directory for a LeRobot v2 dataset (must contain `meta/` and `data/`).
     dataset_root: str | None = None
+    # Optional cache directory for downloaded checkpoints and assets.
+    download_cache_dir: str | None = None
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -185,6 +188,8 @@ class DataConfigFactory(abc.ABC):
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
         asset_id = self.assets.asset_id or repo_id
+        if self.download_cache_dir is not None:
+            os.environ.setdefault("OPENPI_DATA_HOME", self.download_cache_dir)
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
@@ -845,15 +850,17 @@ _CONFIGS = [
         name="pi05_rlbench",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotRLBenchDataConfig(
-            repo_id="daixianjie/rlbench_joint_vel_action_lerobot_train",
+            repo_id="peract_lerobot_train",
+            # repo_id="daixianjie/rlbench_joint_vel_action_lerobot_train",
             dataset_root="/dodrio/scratch/projects/starting_2026_047/dataset/peract_lerobot_train",
             # dataset_root="/home/ze/data/peract_lerobot_train",
+            download_cache_dir="/dodrio/scratch/projects/starting_2026_047/dataset/openpi_cache",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
-        batch_size=32,
+        batch_size=128,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=10_000,
+            warmup_steps=2_000,
             peak_lr=5e-5,
             decay_steps=1_000_000,
             decay_lr=5e-5,
@@ -862,7 +869,8 @@ _CONFIGS = [
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
-        num_train_steps=30_000,
+        num_train_steps=10_000,
+        wandb_enabled=False,
     ),
     # LoRA fine-tuning on RLBench (memory-efficient, ~22.5 GB).
     TrainConfig(
@@ -875,15 +883,17 @@ _CONFIGS = [
             action_expert_variant="gemma_300m_lora",
         ),
         data=LeRobotRLBenchDataConfig(
-            repo_id="daixianjie/rlbench_joint_vel_action_lerobot_train",
+            repo_id="peract_lerobot_train",
+            # repo_id="daixianjie/rlbench_joint_vel_action_lerobot_train",
             dataset_root="/dodrio/scratch/projects/starting_2026_047/dataset/peract_lerobot_train",
             # dataset_root="/home/ze/data/peract_lerobot_train",
+            download_cache_dir="/dodrio/scratch/projects/starting_2026_047/dataset/openpi_cache",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
         batch_size=64,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=5_000,
+            warmup_steps=1_000,
             peak_lr=1e-4,
             decay_steps=500_000,
             decay_lr=1e-4,
@@ -899,8 +909,9 @@ _CONFIGS = [
         ema_decay=None,  # Disable EMA for LoRA
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
-        num_train_steps=30_000,
+        num_train_steps=5_000,
         num_workers=2,
+        wandb_enabled=False,
     ),
     #
     # Fine-tuning Aloha configs.

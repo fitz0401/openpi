@@ -5,6 +5,8 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+import pathlib
+
 import numpy as np
 import tqdm
 import tyro
@@ -29,8 +31,8 @@ def create_torch_dataloader(
     num_workers: int,
     max_frames: int | None = None,
 ) -> tuple[_data_loader.Dataset, int]:
-    if data_config.repo_id is None:
-        raise ValueError("Data config must have a repo_id")
+    if data_config.repo_id is None and data_config.dataset_root is None:
+        raise ValueError("Data config must have either repo_id or dataset_root")
     dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
     dataset = _data_loader.TransformedDataset(
         dataset,
@@ -108,7 +110,16 @@ def main(config_name: str, max_frames: int | None = None):
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    asset_id = data_config.asset_id
+    if asset_id is None:
+        if data_config.repo_id is not None:
+            asset_id = data_config.repo_id
+        elif data_config.dataset_root is not None:
+            asset_id = pathlib.Path(data_config.dataset_root).name or "local_dataset"
+        else:
+            raise ValueError("Cannot determine output asset_id. Set assets.asset_id, repo_id, or dataset_root.")
+
+    output_path = config.assets_dirs / asset_id
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
 
