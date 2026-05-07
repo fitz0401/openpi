@@ -844,9 +844,10 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
-        # Example local RLBench fine-tuning config.
-        # `dataset_root` must point to a LeRobot v2 dataset directory with `meta/` and `data/`.
-        # `repo_id` must match the dataset identifier used when the dataset was created.
+        # Full fine-tuning on RLBench/peract (1800 eps, 37k chunks).
+        # Dataset is ~6× larger than Libero, so we run 100k steps (vs 30k for pi05_libero)
+        # to achieve comparable per-epoch training depth.
+        # Requires 2× A100-80GB with FSDP. For single-GPU: use pi05_rlbench_lora, or override batch_size=32
         name="pi05_rlbench",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotRLBenchDataConfig(
@@ -858,21 +859,24 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
-        batch_size=128,
+        batch_size=64,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=2_000,
+            warmup_steps=10_000,   # ~10% of 100k total steps
             peak_lr=5e-5,
-            decay_steps=1_000_000,
+            decay_steps=1_000_000, # effectively flat LR (same pattern as pi05_libero)
             decay_lr=5e-5,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
-        num_train_steps=10_000,
+        num_train_steps=100_000,
         wandb_enabled=False,
     ),
     # LoRA fine-tuning on RLBench (memory-efficient, ~22.5 GB).
+    # Dataset: 1800 eps, ~37k chunks. batch_size=64 → ~585 steps/epoch.
+    # 20k steps ≈ 34 epochs, comparable to other LoRA configs (pi0_libero_low_mem: ~148 epochs
+    # but on a 6× smaller dataset, so effective exposure is similar).
     TrainConfig(
         name="pi05_rlbench_lora",
         model=pi0_config.Pi0Config(
@@ -893,9 +897,9 @@ _CONFIGS = [
         ),
         batch_size=64,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
+            warmup_steps=1_000,  # 5% of 20k total steps
             peak_lr=1e-4,
-            decay_steps=500_000,
+            decay_steps=500_000, # effectively flat LR (LoRA often benefits from constant LR)
             decay_lr=1e-4,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
@@ -909,7 +913,7 @@ _CONFIGS = [
         ema_decay=None,  # Disable EMA for LoRA
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
-        num_train_steps=5_000,
+        num_train_steps=20_000,
         num_workers=2,
         wandb_enabled=False,
     ),

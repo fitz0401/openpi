@@ -1,9 +1,16 @@
 #!/bin/bash
-#PBS -l nodes=1:ppn=12:gpus=1
-#PBS -l walltime=24:00:00
+#PBS -l nodes=1:ppn=24:gpus=4
+#PBS -l walltime=48:00:00
 #PBS -A starting_2026_047
 
+# Usage:
+#   qsub scripts/job_train.sh                           # default: pi05_rlbench_lora
+#   qsub -v CONFIG=pi05_rlbench scripts/job_train.sh    # full fine-tune
+
 set -euo pipefail
+
+CONFIG=${CONFIG:-pi05_rlbench_lora}
+EXP_NAME=${EXP_NAME:-${CONFIG}}
 
 module load cluster/dodrio/gpu_rome_a100_80_rhel9
 module load CUDA
@@ -20,7 +27,9 @@ echo "===== JOB INFO ====="
 hostname
 date
 pwd
-echo "PBS_JOBID=$PBS_JOBID"
+echo "PBS_JOBID=${PBS_JOBID:-local}"
+echo "CONFIG=${CONFIG}"
+echo "EXP_NAME=${EXP_NAME}"
 
 echo "===== GPU INFO ====="
 nvidia-smi
@@ -31,10 +40,10 @@ python -V
 
 echo "===== DATA CHECK ====="
 ls ../dataset/peract_lerobot_train -al || true
-ls assets/pi05_rlbench_lora -al || true
+ls assets/${CONFIG} -al || true
 
 echo "===== START TRAIN ====="
 
-uv run scripts/train.py pi05_rlbench_lora \
-  --exp-name=pi05_rlbench_lora \
+uv run scripts/train.py ${CONFIG} \
+  --exp-name=${EXP_NAME} \
   --resume

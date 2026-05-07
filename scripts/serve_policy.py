@@ -10,6 +10,8 @@ from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 class EnvMode(enum.Enum):
     """Supported environments."""
@@ -18,6 +20,7 @@ class EnvMode(enum.Enum):
     ALOHA_SIM = "aloha_sim"
     DROID = "droid"
     LIBERO = "libero"
+    RLBENCH = "rlbench"
 
 
 @dataclasses.dataclass
@@ -73,6 +76,10 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
         config="pi05_libero",
         dir="gs://openpi-assets/checkpoints/pi05_libero",
     ),
+    # RLBench: always use policy:checkpoint with a local checkpoint path.
+    # Example: uv run scripts/serve_policy.py policy:checkpoint
+    #            --policy.config pi05_rlbench_lora
+    #            --policy.dir checkpoints/pi05_rlbench_lora/<exp>/<step>
 }
 
 

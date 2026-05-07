@@ -4,6 +4,7 @@
 #PBS -A starting_2026_047
 
 cd /dodrio/scratch/projects/starting_2026_047/openpi
+CONFIG=${CONFIG:-pi05_rlbench_lora}
 
 module load cluster/dodrio/gpu_rome_a100_80_rhel9
 module load CUDA
@@ -15,4 +16,5 @@ export HF_HUB_ENABLE_HF_TRANSFER=0
 export TRANSFORMERS_CACHE=$HF_HOME
 export HF_HUB_DOWNLOAD_THREADS=2
 nvidia-smi
-uv run scripts/compute_norm_stats.py --config-name pi05_rlbench_lora
+echo "CONFIG=${CONFIG}"
+uv run scripts/compute_norm_stats.py --config-name ${CONFIG}
