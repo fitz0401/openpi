@@ -11,7 +11,8 @@ from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+# Respect a pre-set CUDA_VISIBLE_DEVICES (e.g. single-GPU cluster nodes export 0); default to GPU 1 locally.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "1")
 
 class EnvMode(enum.Enum):
     """Supported environments."""

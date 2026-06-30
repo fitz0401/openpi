@@ -24,6 +24,7 @@ import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
+import openpi.training.continual.subsample as _subsample
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.polaris_config as polaris_config
 import openpi.training.misc.roboarena_config as roboarena_config
@@ -101,6 +102,13 @@ class DataConfig:
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
     # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
     datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
+
+    # Continual-benchmark demo subsampling. When set, the LeRobot dataset is restricted to a single
+    # task and a reproducible subset of its episodes (see openpi.training.continual.subsample).
+    # Default None preserves the standard full-dataset behavior.
+    subsample_spec: _subsample.SubsampleSpec | None = None
+    # Directory where the chosen episode indices are written for reproducibility (optional).
+    subsample_indices_path: str | None = None
 
 
 class GroupFactory(Protocol):
@@ -300,6 +308,11 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
     extra_delta_transform: bool = False
 
+    # Continual-benchmark demo subsampling (single task + reproducible episode subset). Default None
+    # preserves standard full-dataset training. Typically set by the continual_finetune orchestrator.
+    subsample_spec: _subsample.SubsampleSpec | None = None
+    subsample_indices_path: str | None = None
+
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # The repack transform is *only* applied to the data coming from the dataset,
@@ -364,6 +377,8 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            subsample_spec=self.subsample_spec,
+            subsample_indices_path=self.subsample_indices_path,
         )
 
 
@@ -844,6 +859,39 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        # Continual finetuning benchmark base template (LIBERO-Object, few-shot).
+        # This is a *template*: the continual_finetune.py orchestrator fills in exp_name,
+        # weight_loader (pretrained for task 1, previous stage's checkpoint thereafter),
+        # data.subsample_spec (single task + demo budget + seed), and num_train_steps per budget.
+        # Norm stats are shared across all budgets/seeds via a single precomputed asset (asset_id below).
+        name="pi05_libero_object_continual",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            # Reuse one shared norm-stats asset computed once on the full LIBERO-Object data
+            # (avoids unstable few-shot statistics). Computed by job_continual_norm.sh.
+            assets=AssetsConfig(asset_id="libero_object"),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        # Few-shot friendly defaults; orchestrator overrides num_train_steps/save_interval per budget.
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100,
+            peak_lr=2.5e-5,
+            decay_steps=500_000,  # effectively flat LR over the short few-shot runs
+            decay_lr=2.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,  # evaluate the actually-trained weights (no EMA) for clean CL measurement
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=1_000,
+        save_interval=250,
+        keep_period=None,
+        num_workers=2,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
         # Full fine-tuning on RLBench/peract (1800 eps, 37k chunks).
         # Dataset is ~6× larger than Libero, so we run 100k steps (vs 30k for pi05_libero)
         # to achieve comparable per-epoch training depth.
@@ -859,7 +907,7 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
-        batch_size=64,
+        batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,   # ~10% of 100k total steps
             peak_lr=5e-5,
@@ -870,7 +918,7 @@ _CONFIGS = [
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
-        num_train_steps=100_000,
+        num_train_steps=30_000,
         wandb_enabled=False,
     ),
     # LoRA fine-tuning on RLBench (memory-efficient, ~22.5 GB).

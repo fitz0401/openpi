@@ -14,6 +14,7 @@ import torch
 
 import openpi.models.model as _model
 import openpi.training.config as _config
+import openpi.training.continual.subsample as _subsample
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
@@ -144,7 +145,12 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=data_config.dataset_root)
-    dataset = lerobot_dataset.LeRobotDataset(
+
+    # Always build the FULL dataset so that `episode_data_index` stays globally indexed. We do NOT
+    # use LeRobot's `episodes=` constructor arg for subsampling: on v2.0-format datasets it compacts
+    # `episode_data_index` while frames keep their original `episode_index`, which makes __getitem__
+    # index out of bounds. Instead we subsample via a torch Subset over the selected frames (below).
+    lerobot_ds = lerobot_dataset.LeRobotDataset(
         repo_id,
         root=data_config.dataset_root,
         delta_timestamps={
@@ -152,8 +158,27 @@ def create_torch_dataset(
         },
     )
 
+    dataset: Dataset = lerobot_ds
     if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+        dataset = TransformedDataset(lerobot_ds, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+
+    # Continual benchmark: restrict to a single task + reproducible episode subset.
+    if data_config.subsample_spec is not None:
+        spec = data_config.subsample_spec
+        selected = _subsample.select_episode_indices(dataset_meta, spec.task, spec.budget, spec.seed)
+        edi = lerobot_ds.episode_data_index
+        frame_indices: list[int] = []
+        for ep in selected:
+            frame_indices.extend(range(int(edi["from"][ep]), int(edi["to"][ep])))
+        if data_config.subsample_indices_path is not None:
+            _subsample.save_indices(
+                data_config.subsample_indices_path,
+                spec,
+                selected,
+                n_available=sum(spec.task in e["tasks"] for e in dataset_meta.episodes.values()),
+                frame_count=len(frame_indices),
+            )
+        dataset = torch.utils.data.Subset(dataset, frame_indices)
 
     return dataset
 

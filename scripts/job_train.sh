@@ -21,6 +21,10 @@ source .venv/bin/activate
 export HF_HOME=/dodrio/scratch/projects/starting_2026_047/cache/huggingface
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export TRANSFORMERS_CACHE=$HF_HOME
+# Redirect the openpi checkpoint download cache (gs://openpi-assets/...) to project scratch;
+# it defaults to ~/.cache/openpi, which sits on the quota-limited user home and truncates
+# large checkpoint downloads (e.g. pi05_base, ~11.6 GiB) mid-transfer.
+export OPENPI_DATA_HOME=/dodrio/scratch/projects/starting_2026_047/cache/openpi
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 echo "===== JOB INFO ====="
