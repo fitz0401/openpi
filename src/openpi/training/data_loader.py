@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+import json
 import logging
 import multiprocessing
 import os
@@ -165,19 +166,37 @@ def create_torch_dataset(
     # Continual benchmark: restrict to a single task + reproducible episode subset.
     if data_config.subsample_spec is not None:
         spec = data_config.subsample_spec
-        selected = _subsample.select_episode_indices(dataset_meta, spec.task, spec.budget, spec.seed)
+        if isinstance(spec, _subsample.SubsampleSpec):
+            canonical_tasks = [_subsample.resolve_task_string(dataset_meta, spec.task)]
+            selected = _subsample.select_episode_indices(dataset_meta, spec.task, spec.budget, spec.seed)
+        elif isinstance(spec, _subsample.EpisodeSubsetSpec):
+            canonical_tasks, selected = _subsample.select_explicit_episode_subset(dataset_meta, spec)
+        else:
+            raise TypeError(f"Unsupported subsample spec: {type(spec)!r}")
         edi = lerobot_ds.episode_data_index
         frame_indices: list[int] = []
         for ep in selected:
             frame_indices.extend(range(int(edi["from"][ep]), int(edi["to"][ep])))
         if data_config.subsample_indices_path is not None:
-            _subsample.save_indices(
-                data_config.subsample_indices_path,
-                spec,
-                selected,
-                n_available=sum(spec.task in e["tasks"] for e in dataset_meta.episodes.values()),
-                frame_count=len(frame_indices),
-            )
+            if isinstance(spec, _subsample.SubsampleSpec):
+                _subsample.save_indices(
+                    data_config.subsample_indices_path,
+                    spec,
+                    selected,
+                    n_available=sum(spec.task in e["tasks"] for e in dataset_meta.episodes.values()),
+                    frame_count=len(frame_indices),
+                )
+            else:
+                subset_payload = {
+                    "tasks": canonical_tasks,
+                    "episode_indices": selected,
+                    "n_selected": len(selected),
+                    "num_transitions": len(frame_indices),
+                    "num_training_windows": len(frame_indices),
+                }
+                pathlib.Path(data_config.subsample_indices_path).write_text(
+                    json.dumps(subset_payload, indent=2) + "\n"
+                )
         dataset = torch.utils.data.Subset(dataset, frame_indices)
 
     return dataset

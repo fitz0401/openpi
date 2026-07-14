@@ -1,0 +1,278 @@
+"""Stage-A source adaptation and independent Stage-B target adaptation.
+
+This script only assembles existing TrainConfig/DataConfig objects and calls scripts.train.main;
+the repository trainer, checkpoint format, and dataloader remain unchanged.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import logging
+import pathlib
+import shutil
+import sys
+
+from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+
+import openpi.training.config as _config
+from openpi.training.continual.subsample import EpisodeSubsetSpec
+from openpi.training.low_data.experiment import jsonable
+from openpi.training.low_data.experiment import load_experiment_config
+from openpi.training.low_data.experiment import nested_episode_subsets
+from openpi.training.low_data.experiment import resolve_suite_tasks
+from openpi.training.low_data.experiment import subset_statistics
+import openpi.training.weight_loaders as weight_loaders
+
+# ``uv run scripts/low_data_train.py`` puts scripts/ (not the repository root) on sys.path.
+# Add the root so the existing trainer can be imported as ``scripts.train`` on cluster jobs.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+# Method selection is intentionally isolated from experiment orchestration so a future method can
+# register its own model/config builder without changing the target grid logic.
+METHOD_CONFIGS = {
+    "full": "pi05_libero_low_data_full",
+    "lora": "pi05_libero_low_data_lora",
+}
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--experiment-config", required=True, type=pathlib.Path)
+    parser.add_argument("--stage", required=True, choices=("source", "target"))
+    parser.add_argument("--target-task-id", type=int)
+    parser.add_argument("--method", choices=tuple(METHOD_CONFIGS))
+    parser.add_argument("--num-demos", type=int)
+    parser.add_argument("--budget-name", default=None)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--descriptor-out", type=pathlib.Path, default=None)
+    return parser.parse_args()
+
+
+def _params_path(checkpoint: str) -> str:
+    checkpoint = checkpoint.rstrip("/")
+    return checkpoint if checkpoint.endswith("/params") else f"{checkpoint}/params"
+
+
+def _remove_train_state(checkpoint_run_dir: pathlib.Path) -> None:
+    for step_dir in checkpoint_run_dir.iterdir():
+        train_state = step_dir / "train_state"
+        if train_state.is_dir():
+            logging.info("Removing non-resumable optimizer state: %s", train_state)
+            shutil.rmtree(train_state)
+
+
+def _write_json(path: pathlib.Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(jsonable(payload), indent=2) + "\n")
+
+
+def _build_source(args: argparse.Namespace, experiment, meta: LeRobotDatasetMetadata):
+    base = _config.get_config(METHOD_CONFIGS["full"])
+    task_strings = resolve_suite_tasks(meta, experiment, experiment.source_task_ids)
+    episode_indices = sorted(
+        ep_idx for ep_idx, episode in meta.episodes.items() if any(task in episode["tasks"] for task in task_strings)
+    )
+    stats = subset_statistics(
+        meta,
+        episode_indices,
+        optimizer_steps=experiment.source.optimizer_steps,
+        batch_size=experiment.source.batch_size,
+    )
+    result_dir = pathlib.Path(experiment.results_root) / experiment.split_id / "source"
+    exp_name = f"{experiment.split_id}/source"
+    subset_manifest = result_dir / "source_subset_manifest.json"
+    data = dataclasses.replace(
+        base.data,
+        subsample_spec=EpisodeSubsetSpec(tasks=task_strings),
+        subsample_indices_path=str(subset_manifest),
+    )
+    cfg = dataclasses.replace(
+        base,
+        checkpoint_base_dir=experiment.checkpoint_root,
+        exp_name=exp_name,
+        data=data,
+        weight_loader=weight_loaders.CheckpointWeightLoader(_params_path(experiment.base_checkpoint)),
+        seed=args.seed,
+        batch_size=experiment.source.batch_size,
+        num_train_steps=experiment.source.optimizer_steps,
+        save_interval=experiment.source.optimizer_steps,
+        keep_period=None,
+        overwrite=True,
+        resume=False,
+    )
+    metadata = {
+        "schema_version": 1,
+        "stage": "source",
+        "split_id": experiment.split_id,
+        "suite": experiment.suite,
+        "task_order_index": experiment.task_order_index,
+        "source_task_ids": list(experiment.source_task_ids),
+        "source_task_strings": list(task_strings),
+        "target_task_ids": list(experiment.target_task_ids),
+        "base_checkpoint": experiment.base_checkpoint,
+        "method": "full",
+        "seed": args.seed,
+        "episode_indices": episode_indices,
+        **stats,
+        "result_dir": str(result_dir.resolve()),
+        "serve_config": base.name,
+    }
+    return cfg, result_dir, metadata
+
+
+def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMetadata):
+    missing = [
+        name
+        for name, value in (
+            ("--target-task-id", args.target_task_id),
+            ("--method", args.method),
+            ("--num-demos", args.num_demos),
+        )
+        if value is None
+    ]
+    if missing:
+        raise SystemExit(f"Target stage requires: {', '.join(missing)}")
+    if args.target_task_id not in experiment.target_task_ids:
+        raise ValueError(f"target_task_id must be one of {experiment.target_task_ids}")
+    if args.method not in experiment.target.methods:
+        raise ValueError(f"method must be one of {experiment.target.methods}")
+    method_demos = experiment.target.demos_for_method(args.method)
+    if args.num_demos not in method_demos:
+        raise ValueError(f"num_demos for {args.method} must be one of {method_demos}")
+    if args.seed not in experiment.target.seeds:
+        raise ValueError(f"seed must be one of {experiment.target.seeds}")
+
+    base = _config.get_config(METHOD_CONFIGS[args.method])
+    task_string = resolve_suite_tasks(meta, experiment, (args.target_task_id,))[0]
+    nested = nested_episode_subsets(
+        meta,
+        suite=experiment.suite,
+        task_id=args.target_task_id,
+        task=task_string,
+        seed=args.seed,
+        budgets=experiment.target.num_demos,
+    )
+    selected = nested[args.num_demos]
+    budget = experiment.target.budget(args.budget_name)
+    num_training_windows = sum(int(meta.episodes[index]["length"]) for index in selected)
+    optimizer_steps = budget.resolve_steps(
+        num_training_windows=num_training_windows,
+        batch_size=experiment.target.batch_size,
+    )
+    stats = subset_statistics(
+        meta,
+        selected,
+        optimizer_steps=optimizer_steps,
+        batch_size=experiment.target.batch_size,
+    )
+    source_manifest_path = experiment.resolved_source_results_dir() / "train_manifest.json"
+    if not source_manifest_path.exists():
+        raise FileNotFoundError(f"Run and evaluate Stage A first; missing {source_manifest_path}")
+    source_manifest = json.loads(source_manifest_path.read_text())
+    source_checkpoint = source_manifest["checkpoint_dir"]
+
+    result_dir = (
+        pathlib.Path(experiment.results_root)
+        / experiment.split_id
+        / "runs"
+        / args.method
+        / f"task{args.target_task_id}"
+        / f"demos{args.num_demos}"
+    )
+    if len(experiment.target.budgets) > 1:
+        result_dir /= f"budget_{budget.name}"
+    result_dir /= f"seed{args.seed}"
+    exp_name = f"{experiment.split_id}/targets/{args.method}/task{args.target_task_id}/demos{args.num_demos}"
+    if len(experiment.target.budgets) > 1:
+        exp_name += f"/budget_{budget.name}"
+    exp_name += f"/seed{args.seed}"
+    subset_manifest = result_dir / "trajectory_subset_manifest.json"
+    data = dataclasses.replace(
+        base.data,
+        subsample_spec=EpisodeSubsetSpec(tasks=(task_string,), episode_indices=tuple(selected)),
+        subsample_indices_path=str(subset_manifest),
+    )
+    cfg = dataclasses.replace(
+        base,
+        checkpoint_base_dir=experiment.checkpoint_root,
+        exp_name=exp_name,
+        data=data,
+        weight_loader=weight_loaders.CheckpointWeightLoader(_params_path(source_checkpoint)),
+        seed=args.seed,
+        batch_size=experiment.target.batch_size,
+        num_train_steps=optimizer_steps,
+        save_interval=optimizer_steps,
+        keep_period=None,
+        overwrite=True,
+        resume=False,
+    )
+    metadata = {
+        "schema_version": 1,
+        "stage": "target",
+        "split_id": experiment.split_id,
+        "suite": experiment.suite,
+        "task_order_index": experiment.task_order_index,
+        "source_task_ids": list(experiment.source_task_ids),
+        "target_task_id": args.target_task_id,
+        "target_task_string": task_string,
+        "method": args.method,
+        "requested_num_demos": args.num_demos,
+        "budget_name": budget.name,
+        "budget_mode": budget.mode,
+        "training_budget": jsonable(budget),
+        "seed": args.seed,
+        "source_checkpoint": source_checkpoint,
+        "selected_trajectory_ids": selected,
+        "nested_trajectory_subsets": {str(budget): indices for budget, indices in nested.items()},
+        **stats,
+        "result_dir": str(result_dir.resolve()),
+        "serve_config": base.name,
+    }
+    return cfg, result_dir, metadata
+
+
+def main() -> None:
+    args = _parse_args()
+    logging.basicConfig(level=logging.INFO)
+    experiment = load_experiment_config(args.experiment_config)
+    metadata = LeRobotDatasetMetadata("physical-intelligence/libero")
+    cfg, result_dir, run_metadata = (
+        _build_source(args, experiment, metadata)
+        if args.stage == "source"
+        else _build_target(args, experiment, metadata)
+    )
+    result_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(result_dir / "resolved_train_config.json", jsonable(cfg))
+    _write_json(result_dir / "train_manifest.pending.json", run_metadata)
+
+    import scripts.train as train_main
+
+    train_main.main(cfg)
+    checkpoint_run_dir = pathlib.Path(cfg.checkpoint_dir)
+    final_step = cfg.num_train_steps - 1
+    checkpoint_dir = checkpoint_run_dir / str(final_step)
+    if not (checkpoint_dir / "params").exists():
+        raise FileNotFoundError(f"Final params were not saved: {checkpoint_dir / 'params'}")
+    _remove_train_state(checkpoint_run_dir)
+
+    run_metadata.update(
+        {
+            "checkpoint_run_dir": str(checkpoint_run_dir),
+            "checkpoint_dir": str(checkpoint_dir),
+            "final_step": final_step,
+            "resolved_train_config": str((result_dir / "resolved_train_config.json").resolve()),
+        }
+    )
+    _write_json(result_dir / "train_manifest.json", run_metadata)
+    (result_dir / "train_manifest.pending.json").unlink(missing_ok=True)
+    if args.descriptor_out is not None:
+        _write_json(args.descriptor_out, run_metadata)
+    logging.info("Training complete: %s", result_dir / "train_manifest.json")
+
+
+if __name__ == "__main__":
+    main()

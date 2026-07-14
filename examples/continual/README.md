@@ -84,6 +84,23 @@ checkpoints/pi05_libero_object_continual/<run>/budget{b}/seed{s}/
 results/*_summary.csv            # mean/std across seeds
 ```
 
+## Downloading and plotting results
+
+Download one run's JSON/CSV outputs, manifest, sampled-demo indices, and summary from Dodrio, then
+generate a dashboard and individual plots locally:
+
+```bash
+scripts/download_continual_results.sh --budget 50 --seed 0 --run-name slice_v0
+```
+
+The default destination is `experiments/budget{budget}_seed{seed}`. Override the login or remote
+repository with `REMOTE_HOST` and `REMOTE_REPO`. To only replot files already downloaded:
+
+```bash
+uv run python scripts/plot_continual_results.py \
+  --run-dir experiments/budget50_seed0
+```
+
 ## Metrics (from the success matrix `R[i][j]`)
 
 Rows `i = 0..N` (0 = pretrained baseline), cols `j = 1..N` (tasks in training order). The full row

@@ -106,7 +106,7 @@ class DataConfig:
     # Continual-benchmark demo subsampling. When set, the LeRobot dataset is restricted to a single
     # task and a reproducible subset of its episodes (see openpi.training.continual.subsample).
     # Default None preserves the standard full-dataset behavior.
-    subsample_spec: _subsample.SubsampleSpec | None = None
+    subsample_spec: _subsample.SubsampleSpec | _subsample.EpisodeSubsetSpec | None = None
     # Directory where the chosen episode indices are written for reproducibility (optional).
     subsample_indices_path: str | None = None
 
@@ -310,7 +310,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
     # Continual-benchmark demo subsampling (single task + reproducible episode subset). Default None
     # preserves standard full-dataset training. Typically set by the continual_finetune orchestrator.
-    subsample_spec: _subsample.SubsampleSpec | None = None
+    subsample_spec: _subsample.SubsampleSpec | _subsample.EpisodeSubsetSpec | None = None
     subsample_indices_path: str | None = None
 
     @override
@@ -887,6 +887,79 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=1_000,
         save_interval=250,
+        keep_period=None,
+        num_workers=2,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        # Storage-safe full-finetuning template for the independent low-data pilot. Experiment
+        # scripts fill the task subset, initialization checkpoint, steps, and output name.
+        name="pi05_libero_low_data_full",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_libero_low_data_full",
+                asset_id="libero_low_data",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100,
+            peak_lr=2.5e-5,
+            decay_steps=500_000,
+            decay_lr=2.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=1_000,
+        save_interval=1_000,
+        keep_period=None,
+        num_workers=2,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        # LoRA method registered for the same low-data orchestration. Dense source weights are
+        # loaded into the LoRA-shaped model and missing adapters are initialized by the loader.
+        name="pi05_libero_low_data_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_libero_low_data_full",
+                asset_id="libero_low_data",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100,
+            peak_lr=2.5e-5,
+            decay_steps=500_000,
+            decay_lr=2.5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=1_000,
+        save_interval=1_000,
         keep_period=None,
         num_workers=2,
         wandb_enabled=False,

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "split_id": "libero_goal_task8_budget_diag_v0",
+  "suite": "libero_goal",
+  "task_order_index": 0,
+  "source_task_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+  "target_task_ids": [8],
+  "base_checkpoint": "gs://openpi-assets/checkpoints/pi05_base",
+  "checkpoint_root": "./checkpoints/low_data_budget_diagnostic",
+  "results_root": "./results/low_data_budget_diagnostic",
+  "source_results_dir": "./results/low_data_pilot/libero_goal_8s2t_v0/source",
+  "source": {
+    "optimizer_steps": 2000,
+    "batch_size": 32
+  },
+  "target": {
+    "num_demos": [1, 50],
+    "methods": ["lora"],
+    "seeds": [0],
+    "budgets": [
+      {
+        "name": "fixed500",
+        "mode": "fixed_steps",
+        "optimizer_steps": 500
+      },
+      {
+        "name": "capped10epochs",
+        "mode": "capped_effective_epochs",
+        "max_steps": 500,
+        "max_effective_epochs": 10.0,
+        "min_steps": 25
+      }
+    ],
+    "batch_size": 32
+  },
+  "evaluation": {
+    "num_trials": 20,
+    "max_steps": 280,
+    "replan_steps": 5
+  }
+}

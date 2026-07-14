@@ -34,6 +34,18 @@ class SubsampleSpec:
     seed: int
 
 
+@dataclasses.dataclass(frozen=True)
+class EpisodeSubsetSpec:
+    """Restrict a dataset to one or more tasks and, optionally, explicit episodes.
+
+    This is used by the low-data pilot. ``episode_indices=None`` selects every trajectory for the
+    resolved tasks (Stage A); explicit indices select a deterministic target subset (Stage B).
+    """
+
+    tasks: tuple[str, ...]
+    episode_indices: tuple[int, ...] | None = None
+
+
 def _normalize(text: str) -> str:
     """Loose normalization used as a fallback when exact task-string matching fails."""
     return " ".join(text.lower().split())
@@ -54,8 +66,7 @@ def resolve_task_string(meta: Any, task: str) -> str:
         logging.warning("Task %r matched dataset task %r via normalized fallback.", task, matches[0])
         return matches[0]
     raise ValueError(
-        f"Task {task!r} not found in dataset tasks (got {len(matches)} normalized matches). "
-        f"Available tasks: {known}"
+        f"Task {task!r} not found in dataset tasks (got {len(matches)} normalized matches). Available tasks: {known}"
     )
 
 
@@ -76,9 +87,7 @@ def select_episode_indices(meta: Any, task: str, budget: int, seed: int) -> list
         raise ValueError(f"budget must be positive, got {budget}")
 
     canonical = resolve_task_string(meta, task)
-    task_episodes = sorted(
-        ep_idx for ep_idx, ep in meta.episodes.items() if canonical in ep["tasks"]
-    )
+    task_episodes = sorted(ep_idx for ep_idx, ep in meta.episodes.items() if canonical in ep["tasks"])
     if not task_episodes:
         raise ValueError(f"No episodes found for task {canonical!r}.")
 
@@ -105,6 +114,30 @@ def select_episode_indices(meta: Any, task: str, budget: int, seed: int) -> list
         selected,
     )
     return selected
+
+
+def select_explicit_episode_subset(meta: Any, spec: EpisodeSubsetSpec) -> tuple[list[str], list[int]]:
+    """Resolve tasks and validate/select explicit episode indices."""
+    if not spec.tasks:
+        raise ValueError("EpisodeSubsetSpec.tasks must not be empty.")
+    canonical_tasks = [resolve_task_string(meta, task) for task in spec.tasks]
+    allowed = sorted(
+        ep_idx for ep_idx, episode in meta.episodes.items() if any(task in episode["tasks"] for task in canonical_tasks)
+    )
+    if not allowed:
+        raise ValueError(f"No episodes found for tasks {canonical_tasks!r}.")
+    if spec.episode_indices is None:
+        return canonical_tasks, allowed
+
+    selected = sorted(set(spec.episode_indices))
+    if len(selected) != len(spec.episode_indices):
+        raise ValueError("Explicit episode indices must be unique.")
+    invalid = sorted(set(selected) - set(allowed))
+    if invalid:
+        raise ValueError(f"Episodes do not belong to the selected tasks: {invalid}")
+    if not selected:
+        raise ValueError("Explicit episode subset must not be empty.")
+    return canonical_tasks, selected
 
 
 def save_indices(
