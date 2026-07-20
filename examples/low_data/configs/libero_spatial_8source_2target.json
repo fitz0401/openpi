@@ -20,13 +20,13 @@
       "lora": [1, 2, 5, 10, 20, 50]
     },
     "seeds": [0],
-    "budgets": [
-      {
-        "name": "fixed500",
-        "mode": "fixed_steps",
-        "optimizer_steps": 500
-      }
-    ],
+    "budget": {
+      "name": "capped10epochs",
+      "mode": "capped_effective_epochs",
+      "max_steps": 500,
+      "max_effective_epochs": 10.0,
+      "min_steps": 25
+    },
     "batch_size": 32
   },
   "evaluation": {

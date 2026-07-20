@@ -27,11 +27,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--server-gpu", default="0")
     parser.add_argument("--server-timeout-s", type=float, default=900.0)
     parser.add_argument("--delete-checkpoint-after-eval", action="store_true")
-    parser.add_argument(
-        "--zero-shot-only",
-        action="store_true",
-        help="Evaluate only configured target tasks using a Stage-A train manifest.",
-    )
     parser.add_argument("--retention-epsilon", type=float, default=1e-8)
     return parser.parse_args()
 
@@ -96,8 +91,9 @@ def _target_rows(
         "target_task_id": train_manifest["target_task_id"],
         "method": train_manifest["method"],
         "num_demos": train_manifest["requested_num_demos"],
-        "budget_name": train_manifest.get("budget_name", "fixed500"),
-        "budget_mode": train_manifest.get("budget_mode", "fixed_steps"),
+        # Defaults are only for pre-protocol manifests; new runs always record capped10epochs.
+        "budget_name": train_manifest.get("budget_name", "legacy_fixed500"),
+        "budget_mode": train_manifest.get("budget_mode", "legacy_fixed_steps"),
         "num_selected_trajectories": train_manifest["num_selected_trajectories"],
         "seed": train_manifest["seed"],
         "num_transitions": train_manifest["num_transitions"],
@@ -188,14 +184,6 @@ def main() -> None:
     train_manifest = json.loads(args.train_manifest.read_text())
     result_dir = pathlib.Path(train_manifest["result_dir"])
 
-    if args.zero_shot_only:
-        if train_manifest["stage"] != "source":
-            raise ValueError("--zero-shot-only requires a Stage-A source train manifest.")
-        target_rates = _evaluate_tasks(args, experiment, train_manifest, list(experiment.target_task_ids))
-        path = _write_target_zero_shot(experiment, train_manifest, target_rates)
-        logging.info("Target zero-shot evaluation complete: %s", path)
-        return
-
     if train_manifest["stage"] == "source":
         eval_ids = [*experiment.source_task_ids, *experiment.target_task_ids]
         rates = _evaluate_tasks(args, experiment, train_manifest, eval_ids)
@@ -214,7 +202,7 @@ def main() -> None:
         _write_json(result_dir / "source_eval.json", payload)
         _write_target_zero_shot(experiment, train_manifest, rates)
     elif train_manifest["stage"] == "target":
-        source_eval_path = experiment.resolved_source_results_dir() / "source_eval.json"
+        source_eval_path = pathlib.Path(experiment.results_root) / experiment.split_id / "source" / "source_eval.json"
         if not source_eval_path.exists():
             raise FileNotFoundError(f"Stage-A evaluation is required first: {source_eval_path}")
         source_eval = json.loads(source_eval_path.read_text())

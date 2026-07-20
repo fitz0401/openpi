@@ -30,19 +30,24 @@ except IndexError as exc:
     raise SystemExit(f"Array index {sys.argv[2]} is outside the Stage-B grid") from exc
 PY
   )
-  read -r TARGET_TASK_ID METHOD NUM_DEMOS SEED BUDGET_NAME <<< "${GRID_ENTRY}"
+  read -r TARGET_TASK_ID METHOD NUM_DEMOS SEED <<< "${GRID_ENTRY}"
 fi
 
 TARGET_TASK_ID=${TARGET_TASK_ID:?Set TARGET_TASK_ID or submit as a PBS array}
 METHOD=${METHOD:?Set METHOD to full or lora}
 NUM_DEMOS=${NUM_DEMOS:?Set NUM_DEMOS}
 SEED=${SEED:-0}
-BUDGET_NAME=${BUDGET_NAME:-}
 DELETE_TARGET_CHECKPOINT=${DELETE_TARGET_CHECKPOINT:-1}
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 JOB_TMPDIR=${TMPDIR:-${VSC_SCRATCH_NODE:-/tmp}/${USER}/${PBS_JOBID:-$$}}
 DESCRIPTOR="${JOB_TMPDIR}/low_data_target_train_manifest.json"
 mkdir -p "${JOB_TMPDIR}"
+
+# Array cells may share a host, so port 8000 is not safe. Derive a stable per-job port unless
+# explicitly overridden. Include both the scheduler job ID and array index when available.
+PORT_SEED="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}${ARRAY_INDEX:-0}"
+PORT_SEED=${PORT_SEED//[!0-9]/}
+PORT=${PORT:-$((18000 + 10#${PORT_SEED:-1} % 20000))}
 
 export HF_HOME=/dodrio/scratch/projects/starting_2026_047/cache/huggingface
 export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -71,22 +76,17 @@ config_file.write_text(json.dumps({
 PY
 
 echo "===== LOW-DATA STAGE B ====="
-echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_TASK_ID} METHOD=${METHOD} DEMOS=${NUM_DEMOS} SEED=${SEED} BUDGET=${BUDGET_NAME:-auto} DELETE=${DELETE_TARGET_CHECKPOINT}"
+echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_TASK_ID} METHOD=${METHOD} DEMOS=${NUM_DEMOS} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT}"
 df -h "${REPO_ROOT}" "${JOB_TMPDIR}" || true
 nvidia-smi
 
 source .venv/bin/activate
-BUDGET_ARGS=()
-if [ -n "${BUDGET_NAME}" ]; then
-  BUDGET_ARGS+=(--budget-name "${BUDGET_NAME}")
-fi
 uv run scripts/low_data_train.py \
   --experiment-config "${EXPERIMENT_CONFIG}" \
   --stage target \
   --target-task-id "${TARGET_TASK_ID}" \
   --method "${METHOD}" \
   --num-demos "${NUM_DEMOS}" \
-  "${BUDGET_ARGS[@]}" \
   --seed "${SEED}" \
   --descriptor-out "${DESCRIPTOR}"
 deactivate
@@ -101,5 +101,6 @@ python scripts/low_data_eval.py \
   --experiment-config "${EXPERIMENT_CONFIG}" \
   --train-manifest "${DESCRIPTOR}" \
   --repo-root "${REPO_ROOT}" \
+  --port "${PORT}" \
   --server-gpu 0 \
   "${DELETE_ARGS[@]}"

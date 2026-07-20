@@ -39,6 +39,9 @@ LIBERO_SUITE_TASKS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+BASELINE_DEMO_GRID = (1, 2, 5, 10, 20, 50)
+FULL_FT_DEMO_ANCHORS = (1, 10, 50)
+
 
 @dataclasses.dataclass(frozen=True)
 class SourceRecipe:
@@ -50,38 +53,23 @@ class SourceRecipe:
 class TrainingBudget:
     name: str
     mode: str
-    optimizer_steps: int | None = None
-    max_steps: int | None = None
-    max_effective_epochs: float | None = None
+    max_steps: int
+    max_effective_epochs: float
     min_steps: int = 1
 
     def validate(self) -> None:
         if not self.name or any(char.isspace() for char in self.name):
             raise ValueError("Training budget names must be non-empty and contain no whitespace.")
-        if self.mode == "fixed_steps":
-            if self.optimizer_steps is None or self.optimizer_steps <= 0:
-                raise ValueError(f"Budget {self.name!r}: fixed_steps requires positive optimizer_steps.")
-        elif self.mode == "capped_effective_epochs":
-            if self.max_steps is None or self.max_steps <= 0:
-                raise ValueError(f"Budget {self.name!r}: capped_effective_epochs requires positive max_steps.")
-            if self.max_effective_epochs is None or self.max_effective_epochs <= 0:
-                raise ValueError(
-                    f"Budget {self.name!r}: capped_effective_epochs requires positive max_effective_epochs."
-                )
-            if self.min_steps <= 0 or self.min_steps > self.max_steps:
-                raise ValueError(f"Budget {self.name!r}: require 0 < min_steps <= max_steps.")
-        else:
-            raise ValueError(
-                f"Budget {self.name!r}: unsupported mode {self.mode!r}; "
-                "choose 'fixed_steps' or 'capped_effective_epochs'."
-            )
+        if self.mode != "capped_effective_epochs":
+            raise ValueError("Fine-tune baselines require mode='capped_effective_epochs'.")
+        if self.max_steps <= 0:
+            raise ValueError(f"Budget {self.name!r}: max_steps must be positive.")
+        if self.max_effective_epochs <= 0:
+            raise ValueError(f"Budget {self.name!r}: max_effective_epochs must be positive.")
+        if self.min_steps <= 0 or self.min_steps > self.max_steps:
+            raise ValueError(f"Budget {self.name!r}: require 0 < min_steps <= max_steps.")
 
     def resolve_steps(self, *, num_training_windows: int, batch_size: int) -> int:
-        if self.mode == "fixed_steps":
-            assert self.optimizer_steps is not None
-            return self.optimizer_steps
-        assert self.max_steps is not None
-        assert self.max_effective_epochs is not None
         epoch_steps = math.ceil(self.max_effective_epochs * num_training_windows / batch_size)
         return max(self.min_steps, min(self.max_steps, epoch_steps))
 
@@ -91,24 +79,12 @@ class TargetRecipe:
     num_demos: tuple[int, ...]
     methods: tuple[str, ...]
     seeds: tuple[int, ...]
-    budgets: tuple[TrainingBudget, ...]
+    budget: TrainingBudget
     method_num_demos: dict[str, tuple[int, ...]]
     batch_size: int = 32
 
     def demos_for_method(self, method: str) -> tuple[int, ...]:
         return self.method_num_demos.get(method, self.num_demos)
-
-    def budget(self, name: str | None) -> TrainingBudget:
-        if name is None:
-            if len(self.budgets) != 1:
-                raise ValueError(f"Select one training budget from {[budget.name for budget in self.budgets]}")
-            return self.budgets[0]
-        matches = [budget for budget in self.budgets if budget.name == name]
-        if not matches:
-            raise ValueError(
-                f"Unknown training budget {name!r}; choose from {[budget.name for budget in self.budgets]}"
-            )
-        return matches[0]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -129,7 +105,6 @@ class PilotExperimentConfig:
     base_checkpoint: str
     checkpoint_root: str
     results_root: str
-    source_results_dir: str | None
     source: SourceRecipe
     target: TargetRecipe
     evaluation: EvalRecipe
@@ -164,14 +139,13 @@ class PilotExperimentConfig:
                 raise ValueError(f"Demo values for {method!r} must be non-empty, sorted, and unique.")
             if not set(demos) <= set(self.target.num_demos):
                 raise ValueError(f"Demo values for {method!r} must be a subset of target.num_demos.")
+        if "full" in self.target.methods and self.target.demos_for_method("full") != FULL_FT_DEMO_ANCHORS:
+            raise ValueError(f"Full FT protocol requires sparse demo anchors {FULL_FT_DEMO_ANCHORS}.")
+        if "lora" in self.target.methods and self.target.demos_for_method("lora") != BASELINE_DEMO_GRID:
+            raise ValueError(f"LoRA protocol requires the complete demo grid {BASELINE_DEMO_GRID}.")
         if self.source.optimizer_steps <= 0:
             raise ValueError("Source optimizer-step budget must be positive.")
-        if not self.target.budgets:
-            raise ValueError("At least one target training budget is required.")
-        if len({budget.name for budget in self.target.budgets}) != len(self.target.budgets):
-            raise ValueError("Target training budget names must be unique.")
-        for budget in self.target.budgets:
-            budget.validate()
+        self.target.budget.validate()
 
     def task_string(self, task_id: int) -> str:
         return LIBERO_SUITE_TASKS[self.suite][task_id]
@@ -181,37 +155,6 @@ class PilotExperimentConfig:
 
     def target_task_strings(self) -> tuple[str, ...]:
         return tuple(self.task_string(task_id) for task_id in self.target_task_ids)
-
-    def resolved_source_results_dir(self) -> pathlib.Path:
-        if self.source_results_dir is not None:
-            return pathlib.Path(self.source_results_dir)
-        return pathlib.Path(self.results_root) / self.split_id / "source"
-
-
-def _load_training_budgets(raw_target: dict[str, Any]) -> tuple[TrainingBudget, ...]:
-    raw_budgets = raw_target.get("budgets")
-    if raw_budgets is None:
-        # Backward compatibility for the original pilot configs.
-        return (
-            TrainingBudget(
-                name="fixed_steps",
-                mode="fixed_steps",
-                optimizer_steps=int(raw_target["optimizer_steps"]),
-            ),
-        )
-    return tuple(
-        TrainingBudget(
-            name=str(raw["name"]),
-            mode=str(raw["mode"]),
-            optimizer_steps=int(raw["optimizer_steps"]) if raw.get("optimizer_steps") is not None else None,
-            max_steps=int(raw["max_steps"]) if raw.get("max_steps") is not None else None,
-            max_effective_epochs=(
-                float(raw["max_effective_epochs"]) if raw.get("max_effective_epochs") is not None else None
-            ),
-            min_steps=int(raw.get("min_steps", 1)),
-        )
-        for raw in raw_budgets
-    )
 
 
 def load_experiment_config(path: str | pathlib.Path) -> PilotExperimentConfig:
@@ -227,13 +170,12 @@ def load_experiment_config(path: str | pathlib.Path) -> PilotExperimentConfig:
         base_checkpoint=str(raw["base_checkpoint"]),
         checkpoint_root=str(raw.get("checkpoint_root", "./checkpoints/low_data_pilot")),
         results_root=str(raw.get("results_root", "./results/low_data_pilot")),
-        source_results_dir=str(raw["source_results_dir"]) if raw.get("source_results_dir") is not None else None,
         source=SourceRecipe(**raw["source"]),
         target=TargetRecipe(
             num_demos=tuple(int(x) for x in raw["target"]["num_demos"]),
             methods=tuple(str(x) for x in raw["target"]["methods"]),
             seeds=tuple(int(x) for x in raw["target"]["seeds"]),
-            budgets=_load_training_budgets(raw["target"]),
+            budget=TrainingBudget(**raw["target"]["budget"]),
             method_num_demos={
                 str(method): tuple(int(x) for x in demos)
                 for method, demos in raw["target"].get("method_num_demos", {}).items()
@@ -246,15 +188,14 @@ def load_experiment_config(path: str | pathlib.Path) -> PilotExperimentConfig:
     return config
 
 
-def target_grid(config: PilotExperimentConfig) -> list[tuple[int, str, int, int, str]]:
-    """Return deterministic (target, method, demos, seed, budget-name) Stage-B cells."""
+def target_grid(config: PilotExperimentConfig) -> list[tuple[int, str, int, int]]:
+    """Return deterministic (target, method, demos, seed) Stage-B cells."""
     return [
-        (task_id, method, demos, seed, budget.name)
+        (task_id, method, demos, seed)
         for task_id in config.target_task_ids
         for method in config.target.methods
         for demos in config.target.demos_for_method(method)
         for seed in config.target.seeds
-        for budget in config.target.budgets
     ]
 
 

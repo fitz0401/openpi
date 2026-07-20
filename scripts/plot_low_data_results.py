@@ -52,8 +52,9 @@ def _read_rows(path: pathlib.Path) -> list[dict]:
     with path.open(newline="") as f:
         rows = list(csv.DictReader(f))
     for row in rows:
-        row.setdefault("budget_name", "fixed500")
-        row.setdefault("budget_mode", "fixed_steps")
+        # Preserve readability of pilot rows written before budget metadata was introduced.
+        row.setdefault("budget_name", "legacy_fixed500")
+        row.setdefault("budget_mode", "legacy_fixed_steps")
         for field in integer_fields:
             row[field] = int(row[field])
         for field in float_fields:
@@ -78,6 +79,47 @@ def _validate(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     if len(source_rows) != expected_source_rows:
         raise ValueError(f"Incomplete source evaluations: found {len(source_rows)}, expected {expected_source_rows}")
     return target_rows, source_rows
+
+
+def _grid_coverage(target_rows: list[dict]) -> tuple[bool, list[dict]]:
+    targets = sorted({row["target_task_id"] for row in target_rows})
+    methods = sorted({row["method"] for row in target_rows})
+    seeds = sorted({row["seed"] for row in target_rows})
+    budgets = sorted({(row["budget_name"], row["budget_mode"]) for row in target_rows})
+    demos_by_method = {
+        method: sorted({row["num_demos"] for row in target_rows if row["method"] == method}) for method in methods
+    }
+    actual = {
+        (
+            row["target_task_id"],
+            row["method"],
+            row["num_demos"],
+            row["seed"],
+            row["budget_name"],
+            row["budget_mode"],
+        )
+        for row in target_rows
+    }
+    expected = {
+        (target, method, demos, seed, budget_name, budget_mode)
+        for target in targets
+        for method in methods
+        for demos in demos_by_method[method]
+        for seed in seeds
+        for budget_name, budget_mode in budgets
+    }
+    missing = [
+        {
+            "target_task_id": target,
+            "method": method,
+            "num_demos": demos,
+            "seed": seed,
+            "budget_name": budget_name,
+            "budget_mode": budget_mode,
+        }
+        for target, method, demos, seed, budget_name, budget_mode in sorted(expected - actual)
+    ]
+    return not missing, missing
 
 
 def _wilson_interval(rate: float, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -312,6 +354,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = _read_rows(results_dir / "tidy_results.csv")
     target_rows, source_rows = _validate(rows)
+    complete, missing_conditions = _grid_coverage(target_rows)
     targets = sorted({row["target_task_id"] for row in target_rows})
     methods = sorted({row["method"] for row in target_rows})
     series_values = _series(target_rows)
@@ -391,7 +434,8 @@ def main() -> None:
             "training_budgets": sorted({row["budget_name"] for row in target_rows}),
             "num_demos": demos,
             "seeds": seeds,
-            "complete": True,
+            "complete": complete,
+            "missing_conditions": missing_conditions,
         },
         "evaluation": {"num_trials_assumed": args.num_trials},
         "stage_a_source_success_macro": target_rows[0]["source_success_before"],
@@ -421,6 +465,8 @@ def main() -> None:
         ],
     }
     (out_dir / "plot_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    if missing_conditions:
+        print(f"WARNING: missing {len(missing_conditions)} adaptation conditions: {missing_conditions}")
     print(f"Wrote plots and summary to {out_dir}")
 
 

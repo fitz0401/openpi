@@ -13,7 +13,6 @@ def main() -> None:
     parser.add_argument("--results-dir", required=True, type=pathlib.Path)
     parser.add_argument("--csv-out", type=pathlib.Path, default=None)
     parser.add_argument("--jsonl-out", type=pathlib.Path, default=None)
-    parser.add_argument("--zero-shot-eval", type=pathlib.Path, default=None)
     args = parser.parse_args()
 
     paths = sorted(args.results_dir.glob("runs/**/tidy_results.jsonl"))
@@ -22,14 +21,15 @@ def main() -> None:
     rows = []
     for path in paths:
         rows.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
-    zero_shot_path = args.zero_shot_eval or args.results_dir / "source" / "target_zero_shot_eval.json"
+    zero_shot_path = args.results_dir / "source" / "target_zero_shot_eval.json"
     zero_shot_rates = {}
     if zero_shot_path.exists():
         payload = json.loads(zero_shot_path.read_text())
         zero_shot_rates = {int(key): float(value) for key, value in payload["target_success_zero_shot"].items()}
     for row in rows:
-        row.setdefault("budget_name", "fixed500")
-        row.setdefault("budget_mode", "fixed_steps")
+        # Preserve readability of pilot rows written before budget metadata was introduced.
+        row.setdefault("budget_name", "legacy_fixed500")
+        row.setdefault("budget_mode", "legacy_fixed_steps")
         if row["target_task_id"] in zero_shot_rates:
             baseline = zero_shot_rates[row["target_task_id"]]
             row["target_success_zero_shot"] = baseline

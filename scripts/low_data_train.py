@@ -46,7 +46,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--target-task-id", type=int)
     parser.add_argument("--method", choices=tuple(METHOD_CONFIGS))
     parser.add_argument("--num-demos", type=int)
-    parser.add_argument("--budget-name", default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--descriptor-out", type=pathlib.Path, default=None)
     return parser.parse_args()
@@ -157,7 +156,7 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         budgets=experiment.target.num_demos,
     )
     selected = nested[args.num_demos]
-    budget = experiment.target.budget(args.budget_name)
+    budget = experiment.target.budget
     num_training_windows = sum(int(meta.episodes[index]["length"]) for index in selected)
     optimizer_steps = budget.resolve_steps(
         num_training_windows=num_training_windows,
@@ -169,7 +168,9 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         optimizer_steps=optimizer_steps,
         batch_size=experiment.target.batch_size,
     )
-    source_manifest_path = experiment.resolved_source_results_dir() / "train_manifest.json"
+    source_manifest_path = (
+        pathlib.Path(experiment.results_root) / experiment.split_id / "source" / "train_manifest.json"
+    )
     if not source_manifest_path.exists():
         raise FileNotFoundError(f"Run and evaluate Stage A first; missing {source_manifest_path}")
     source_manifest = json.loads(source_manifest_path.read_text())
@@ -183,12 +184,8 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         / f"task{args.target_task_id}"
         / f"demos{args.num_demos}"
     )
-    if len(experiment.target.budgets) > 1:
-        result_dir /= f"budget_{budget.name}"
     result_dir /= f"seed{args.seed}"
     exp_name = f"{experiment.split_id}/targets/{args.method}/task{args.target_task_id}/demos{args.num_demos}"
-    if len(experiment.target.budgets) > 1:
-        exp_name += f"/budget_{budget.name}"
     exp_name += f"/seed{args.seed}"
     subset_manifest = result_dir / "trajectory_subset_manifest.json"
     data = dataclasses.replace(

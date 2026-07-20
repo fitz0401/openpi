@@ -17,6 +17,9 @@ LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 JOB_TMPDIR=${TMPDIR:-${VSC_SCRATCH_NODE:-/tmp}/${USER}/${PBS_JOBID:-$$}}
 DESCRIPTOR="${JOB_TMPDIR}/low_data_source_train_manifest.json"
 mkdir -p "${JOB_TMPDIR}"
+PORT_SEED="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}"
+PORT_SEED=${PORT_SEED//[!0-9]/}
+PORT=${PORT:-$((18000 + 10#${PORT_SEED:-1} % 20000))}
 
 export HF_HOME=/dodrio/scratch/projects/starting_2026_047/cache/huggingface
 export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -63,4 +66,5 @@ python scripts/low_data_eval.py \
   --experiment-config "${EXPERIMENT_CONFIG}" \
   --train-manifest "${DESCRIPTOR}" \
   --repo-root "${REPO_ROOT}" \
+  --port "${PORT}" \
   --server-gpu 0

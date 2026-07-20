@@ -7,8 +7,8 @@ benchmark.
 ## Protocol
 
 Stage A jointly full-finetunes π₀.₅ on eight source tasks from one suite and evaluates the resulting
-checkpoint on all source tasks and both unseen target tasks (zero-shot). Stage B trains each target independently: every
-`(target, method, num_demos, seed, training_budget)` run reloads the same Stage-A checkpoint and its dataloader
+checkpoint on all source tasks and both unseen target tasks (zero-shot). Stage B trains each target
+independently: every `(target, method, num_demos, seed)` run reloads the same Stage-A checkpoint and its dataloader
 contains only the selected target trajectories. There is no target-to-target weight transfer,
 source replay, or guidance.
 
@@ -22,9 +22,11 @@ Provisional configs:
 - `configs/libero_goal_8source_2target.json`: source IDs 0–7, target IDs 8–9.
 
 Both use LIBERO `task_order_index=0`; source and target IDs are validated as disjoint. The JSON
-files configure the base checkpoint, task split, training budget, batch size, method-specific demo
-budgets, methods, seeds, rollout count, and storage roots. Full FT uses demos `[1, 10, 50]`; LoRA
-keeps `[1, 2, 5, 10, 20, 50]`.
+files configure the base checkpoint, task split, batch size, method-specific demo budgets, methods,
+seeds, rollout count, and storage roots. The fine-tune baseline protocol is fixed to one
+`capped_effective_epochs` budget with `max_effective_epochs=10`, `max_steps=500`, and
+`min_steps=25`. Full FT uses sparse anchors `[1, 10, 50]`; LoRA keeps the complete grid
+`[1, 2, 5, 10, 20, 50]`.
 
 ## Cluster commands
 
@@ -48,20 +50,16 @@ qsub -v EXPERIMENT_CONFIG=examples/low_data/configs/libero_goal_8source_2target.
   scripts/job_low_data_stage_a.sh
 ```
 
-For the already-completed Spatial Stage A, add the new target zero-shot result without retraining:
-
-```bash
-qsub -v EXPERIMENT_CONFIG=examples/low_data/configs/libero_spatial_8source_2target.json \
-  scripts/job_low_data_zero_shot.sh
-```
-
 Run one Stage-B cell (Spatial target 8, full FT, ten demos, seed 0):
 
 ```bash
 qsub -v EXPERIMENT_CONFIG=examples/low_data/configs/libero_spatial_8source_2target.json,\
-TARGET_TASK_ID=8,METHOD=full,NUM_DEMOS=10,SEED=0,BUDGET_NAME=fixed500 \
+TARGET_TASK_ID=8,METHOD=full,NUM_DEMOS=10,SEED=0 \
   scripts/job_low_data_stage_b.sh
 ```
+
+Evaluation ports are derived from the scheduler job/array ID so concurrent cells on the same host
+do not both attempt to use port 8000.
 
 Submit every Stage-B cell encoded by a config as one throttled scheduler array. The default runs at most two
 cells concurrently:
@@ -100,27 +98,17 @@ uv run scripts/plot_low_data_results.py \
   --results-dir results/low_data_pilot/libero_goal_8s2t_v0
 ```
 
-## Training-budget diagnostic
+## Training budget
 
-The Spatial experiment uses `fixed500`. Based on the Goal diagnostic, the complete Goal experiment
-uses only `capped10epochs` (not both modes). The small diagnostic reuses the completed Goal
-Stage-A checkpoint and submits four cells: target 8 only, LoRA only, demos `[1, 50]`, crossed with
-`fixed500` and `capped10epochs`:
-
-```bash
-MAX_CONCURRENT=2 scripts/submit_low_data_stage_b.sh \
-  examples/low_data/configs/libero_goal_budget_diagnostic.json
-```
-
-For `capped_effective_epochs`, the resolved optimizer steps are:
+All formal fine-tune baselines use the same `capped_effective_epochs` rule:
 
 ```text
 max(min_steps, min(max_steps, ceil(max_effective_epochs * num_training_windows / batch_size)))
 ```
 
-The provided diagnostic sets `max_effective_epochs=10`, `max_steps=500`, and `min_steps=25`.
-Run it only after the normal Goal Stage A has produced
-`results/low_data_pilot/libero_goal_8s2t_v0/source/train_manifest.json` and its evaluations.
+The resolved step count and resulting effective epochs are recorded in every train manifest and
+tidy result row. Fixed-step and multi-budget diagnostic orchestration are intentionally outside the
+formal baseline protocol.
 
 ## Outputs and storage
 
