@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import logging
 import pathlib
@@ -13,6 +14,7 @@ import continual_eval
 from libero.libero import benchmark
 from openpi_client import websocket_client_policy
 
+from openpi.training.low_data.experiment import TaskRef
 from openpi.training.low_data.experiment import load_experiment_config
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -36,23 +38,8 @@ def _write_json(path: pathlib.Path, payload) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def _evaluate_tasks(args, experiment, train_manifest, task_ids: list[int]) -> dict[int, float]:
-    suite_cls = benchmark.get_benchmark_dict()[experiment.suite]
-    task_suite = suite_cls(task_order_index=experiment.task_order_index)
-    rollout_args = continual_eval.Args(
-        manifest="unused",
-        repo_root=str(args.repo_root),
-        serve_config=train_manifest["serve_config"],
-        task_suite_name=experiment.suite,
-        num_trials=experiment.evaluation.num_trials,
-        max_steps=experiment.evaluation.max_steps,
-        replan_steps=experiment.evaluation.replan_steps,
-        port=args.port,
-        server_gpu=args.server_gpu,
-        server_timeout_s=args.server_timeout_s,
-        seed=7,
-    )
-    rates: dict[int, float] = {}
+def _evaluate_tasks(args, experiment, train_manifest, task_refs: list[TaskRef]) -> dict[TaskRef, float]:
+    rates: dict[TaskRef, float] = {}
     with continual_eval.policy_server(
         str(args.repo_root),
         train_manifest["serve_config"],
@@ -62,32 +49,49 @@ def _evaluate_tasks(args, experiment, train_manifest, task_ids: list[int]) -> di
         args.server_timeout_s,
     ):
         client = websocket_client_policy.WebsocketClientPolicy("0.0.0.0", args.port)
-        for task_id in task_ids:
-            rates[task_id] = continual_eval.eval_task(
-                client,
-                task_suite,
-                task_id,
-                rollout_args,
-                experiment.evaluation.num_trials,
+        for suite in dict.fromkeys(ref.suite for ref in task_refs):
+            task_suite = benchmark.get_benchmark_dict()[suite](task_order_index=experiment.task_order_index)
+            rollout_args = continual_eval.Args(
+                manifest="unused",
+                repo_root=str(args.repo_root),
+                serve_config=train_manifest["serve_config"],
+                task_suite_name=suite,
+                num_trials=experiment.evaluation.num_trials,
+                max_steps=experiment.evaluation.max_steps,
+                replan_steps=experiment.evaluation.replan_steps,
+                port=args.port,
+                server_gpu=args.server_gpu,
+                server_timeout_s=args.server_timeout_s,
+                seed=7,
             )
+            for ref in (ref for ref in task_refs if ref.suite == suite):
+                rates[ref] = continual_eval.eval_task(
+                    client,
+                    task_suite,
+                    ref.task_id,
+                    rollout_args,
+                    experiment.evaluation.num_trials,
+                )
     return rates
 
 
 def _target_rows(
     experiment,
     train_manifest,
-    rates: dict[int, float],
-    source_before: dict[int, float],
+    rates: dict[TaskRef, float],
+    source_before: dict[TaskRef, float],
     target_success_zero_shot: float,
     epsilon: float,
 ):
-    source_after = {task_id: rates[task_id] for task_id in experiment.source_task_ids}
+    source_refs = experiment.source_task_refs()
+    source_after = {ref: rates[ref] for ref in source_refs}
     macro_before = sum(source_before.values()) / len(source_before)
     macro_after = sum(source_after.values()) / len(source_after)
     common = {
-        "suite": experiment.suite,
+        "suite": train_manifest["suite"],
         "split_id": experiment.split_id,
-        "source_task_ids": list(experiment.source_task_ids),
+        "source_task_ids": experiment.source_task_ids_by_suite(),
+        "source_tasks": [dataclasses.asdict(ref) for ref in source_refs],
         "target_task_id": train_manifest["target_task_id"],
         "method": train_manifest["method"],
         "num_demos": train_manifest["requested_num_demos"],
@@ -105,13 +109,14 @@ def _target_rows(
         "target_success_gain": None,
     }
     rows = []
-    for task_id in experiment.source_task_ids:
-        before = source_before[task_id]
-        after = source_after[task_id]
+    for ref in source_refs:
+        before = source_before[ref]
+        after = source_after[ref]
         rows.append(
             {
                 **common,
-                "evaluated_task_id": task_id,
+                "evaluated_task_suite": ref.suite,
+                "evaluated_task_id": ref.task_id,
                 "evaluated_task_role": "source",
                 "success_rate": after,
                 "source_success_before": before,
@@ -121,14 +126,15 @@ def _target_rows(
                 "source_metric_scope": "task",
             }
         )
-    target_id = train_manifest["target_task_id"]
+    target_ref = TaskRef(train_manifest["suite"], train_manifest["target_task_id"])
     rows.append(
         {
             **common,
-            "evaluated_task_id": target_id,
+            "evaluated_task_suite": target_ref.suite,
+            "evaluated_task_id": target_ref.task_id,
             "evaluated_task_role": "target",
-            "success_rate": rates[target_id],
-            "target_success_gain": rates[target_id] - target_success_zero_shot,
+            "success_rate": rates[target_ref],
+            "target_success_gain": rates[target_ref] - target_success_zero_shot,
             "source_success_before": macro_before,
             "source_success_after": macro_after,
             "source_forgetting": macro_before - macro_after,
@@ -150,16 +156,16 @@ def _write_tidy(result_dir: pathlib.Path, rows: list[dict]) -> None:
             f.write(json.dumps(row) + "\n")
 
 
-def _write_target_zero_shot(experiment, train_manifest: dict, rates: dict[int, float]) -> pathlib.Path:
+def _write_target_zero_shot(experiment, train_manifest: dict, rates: dict[TaskRef, float]) -> pathlib.Path:
     result_dir = pathlib.Path(train_manifest["result_dir"])
     path = result_dir / "target_zero_shot_eval.json"
     _write_json(
         path,
         {
-            "suite": experiment.suite,
             "split_id": experiment.split_id,
-            "target_task_ids": list(experiment.target_task_ids),
-            "target_success_zero_shot": {str(task_id): rates[task_id] for task_id in experiment.target_task_ids},
+            "target_task_ids": experiment.target_task_ids_by_suite(),
+            "target_tasks": [dataclasses.asdict(ref) for ref in experiment.target_task_refs()],
+            "target_success_zero_shot": {ref.key: rates[ref] for ref in experiment.target_task_refs()},
             "num_trials": experiment.evaluation.num_trials,
             "checkpoint_dir": train_manifest["checkpoint_dir"],
         },
@@ -177,6 +183,15 @@ def _delete_checkpoint(train_manifest: dict) -> None:
         shutil.rmtree(run_dir)
 
 
+def _read_task_rates(payload: dict, field: str, refs: tuple[TaskRef, ...]) -> dict[TaskRef, float]:
+    values = payload[field]
+    rates = {}
+    for ref in refs:
+        key = ref.key if ref.key in values else str(ref.task_id)
+        rates[ref] = float(values[key])
+    return rates
+
+
 def main() -> None:
     args = _parse_args()
     logging.basicConfig(level=logging.INFO)
@@ -185,17 +200,18 @@ def main() -> None:
     result_dir = pathlib.Path(train_manifest["result_dir"])
 
     if train_manifest["stage"] == "source":
-        eval_ids = [*experiment.source_task_ids, *experiment.target_task_ids]
-        rates = _evaluate_tasks(args, experiment, train_manifest, eval_ids)
+        source_refs = experiment.source_task_refs()
+        target_refs = experiment.target_task_refs()
+        rates = _evaluate_tasks(args, experiment, train_manifest, [*source_refs, *target_refs])
         payload = {
-            "suite": experiment.suite,
             "split_id": experiment.split_id,
-            "source_task_ids": list(experiment.source_task_ids),
-            "source_success_before": {str(task_id): rates[task_id] for task_id in experiment.source_task_ids},
-            "source_success_before_macro": (
-                sum(rates[task_id] for task_id in experiment.source_task_ids) / len(experiment.source_task_ids)
-            ),
-            "target_success_zero_shot": {str(task_id): rates[task_id] for task_id in experiment.target_task_ids},
+            "source_task_ids": experiment.source_task_ids_by_suite(),
+            "source_tasks": [dataclasses.asdict(ref) for ref in source_refs],
+            "source_success_before": {ref.key: rates[ref] for ref in source_refs},
+            "source_success_before_macro": sum(rates[ref] for ref in source_refs) / len(source_refs),
+            "target_task_ids": experiment.target_task_ids_by_suite(),
+            "target_tasks": [dataclasses.asdict(ref) for ref in target_refs],
+            "target_success_zero_shot": {ref.key: rates[ref] for ref in target_refs},
             "num_trials": experiment.evaluation.num_trials,
             "checkpoint_dir": train_manifest["checkpoint_dir"],
         }
@@ -206,16 +222,16 @@ def main() -> None:
         if not source_eval_path.exists():
             raise FileNotFoundError(f"Stage-A evaluation is required first: {source_eval_path}")
         source_eval = json.loads(source_eval_path.read_text())
-        source_before = {int(key): float(value) for key, value in source_eval["source_success_before"].items()}
+        source_before = _read_task_rates(source_eval, "source_success_before", experiment.source_task_refs())
         zero_shot_path = source_eval_path.parent / "target_zero_shot_eval.json"
         if not zero_shot_path.exists():
             raise FileNotFoundError(
                 f"Target zero-shot evaluation is required; run scripts/job_low_data_zero_shot.sh: {zero_shot_path}"
             )
         zero_shot = json.loads(zero_shot_path.read_text())
-        target_success_zero_shot = float(zero_shot["target_success_zero_shot"][str(train_manifest["target_task_id"])])
-        eval_ids = [train_manifest["target_task_id"], *experiment.source_task_ids]
-        rates = _evaluate_tasks(args, experiment, train_manifest, eval_ids)
+        target_ref = TaskRef(train_manifest["suite"], train_manifest["target_task_id"])
+        target_success_zero_shot = _read_task_rates(zero_shot, "target_success_zero_shot", (target_ref,))[target_ref]
+        rates = _evaluate_tasks(args, experiment, train_manifest, [target_ref, *experiment.source_task_refs()])
         rows = _target_rows(
             experiment,
             train_manifest,
@@ -229,7 +245,7 @@ def main() -> None:
             result_dir / "eval_results.json",
             {
                 "train_manifest": train_manifest,
-                "success_rates": {str(key): value for key, value in rates.items()},
+                "success_rates": {ref.key: value for ref, value in rates.items()},
                 "source_eval_path": str(source_eval_path),
                 "num_trials": experiment.evaluation.num_trials,
             },

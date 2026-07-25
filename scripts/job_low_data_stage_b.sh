@@ -30,18 +30,75 @@ except IndexError as exc:
     raise SystemExit(f"Array index {sys.argv[2]} is outside the Stage-B grid") from exc
 PY
   )
-  read -r TARGET_TASK_ID METHOD NUM_DEMOS SEED <<< "${GRID_ENTRY}"
+  read -r TARGET_SUITE TARGET_TASK_ID METHOD NUM_DEMOS SEED <<< "${GRID_ENTRY}"
 fi
 
+TARGET_SUITE=${TARGET_SUITE:?Set TARGET_SUITE or submit as a PBS array}
 TARGET_TASK_ID=${TARGET_TASK_ID:?Set TARGET_TASK_ID or submit as a PBS array}
 METHOD=${METHOD:?Set METHOD to full or lora}
 NUM_DEMOS=${NUM_DEMOS:?Set NUM_DEMOS}
 SEED=${SEED:-0}
 DELETE_TARGET_CHECKPOINT=${DELETE_TARGET_CHECKPOINT:-1}
+DELETE_TARGET_CHECKPOINT_ON_FAILURE=${DELETE_TARGET_CHECKPOINT_ON_FAILURE:-1}
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
-JOB_TMPDIR=${TMPDIR:-${VSC_SCRATCH_NODE:-/tmp}/${USER}/${PBS_JOBID:-$$}}
+JOB_TOKEN="${PBS_JOBID:-$$}_${ARRAY_INDEX:-0}"
+JOB_TOKEN=${JOB_TOKEN//[!a-zA-Z0-9_.-]/_}
+JOB_TMPDIR=${JOB_TMPDIR:-${TMPDIR:-${VSC_SCRATCH_NODE:-/tmp}}/${USER}/openpi_low_data_${JOB_TOKEN}}
 DESCRIPTOR="${JOB_TMPDIR}/low_data_target_train_manifest.json"
 mkdir -p "${JOB_TMPDIR}"
+
+RESULT_DIR=$(uv run python - "${EXPERIMENT_CONFIG}" "${TARGET_SUITE}" "${TARGET_TASK_ID}" \
+  "${METHOD}" "${NUM_DEMOS}" "${SEED}" <<'PY'
+import sys
+from openpi.training.low_data.experiment import load_experiment_config, target_result_dir
+
+config = load_experiment_config(sys.argv[1])
+print(target_result_dir(config, sys.argv[2], int(sys.argv[3]), sys.argv[4], int(sys.argv[5]), int(sys.argv[6])))
+PY
+)
+PERSISTENT_MANIFEST="${RESULT_DIR}/train_manifest.json"
+if [ -s "${RESULT_DIR}/tidy_results.jsonl" ]; then
+  echo "Stage-B result already complete; skipping ${RESULT_DIR}"
+  exit 0
+fi
+
+cleanup_failed_checkpoint() {
+  status=$?
+  if [ "${status}" -ne 0 ] && [ "${DELETE_TARGET_CHECKPOINT_ON_FAILURE}" = 1 ]; then
+    uv run python - "${REPO_ROOT}" "${JOB_TMPDIR}" "${PERSISTENT_MANIFEST}" \
+      "${RESULT_DIR}/resolved_train_config.json" <<'PY' || true
+import json
+import pathlib
+import shutil
+import sys
+
+repo_root = pathlib.Path(sys.argv[1]).resolve()
+job_tmpdir = pathlib.Path(sys.argv[2]).resolve()
+manifest_path = pathlib.Path(sys.argv[3])
+config_path = pathlib.Path(sys.argv[4])
+run_dir = None
+if manifest_path.exists():
+    run_dir = pathlib.Path(json.loads(manifest_path.read_text())["checkpoint_run_dir"])
+elif config_path.exists():
+    config = json.loads(config_path.read_text())
+    run_dir = pathlib.Path(config["checkpoint_base_dir"]) / config["name"] / config["exp_name"]
+if run_dir is not None:
+    run_dir = (repo_root / run_dir).resolve() if not run_dir.is_absolute() else run_dir.resolve()
+    allowed_roots = ((repo_root / "checkpoints").resolve(), job_tmpdir)
+    if (
+        any(root == run_dir or root in run_dir.parents for root in allowed_roots)
+        and "targets" in run_dir.parts
+        and run_dir.is_dir()
+    ):
+        print(f"Removing failed transient target checkpoint: {run_dir}")
+        shutil.rmtree(run_dir)
+PY
+  fi
+  exit "${status}"
+}
+trap cleanup_failed_checkpoint EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Array cells may share a host, so port 8000 is not safe. Derive a stable per-job port unless
 # explicitly overridden. Include both the scheduler job ID and array index when available.
@@ -76,20 +133,40 @@ config_file.write_text(json.dumps({
 PY
 
 echo "===== LOW-DATA STAGE B ====="
-echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_TASK_ID} METHOD=${METHOD} DEMOS=${NUM_DEMOS} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT}"
+echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_SUITE}:${TARGET_TASK_ID} METHOD=${METHOD} DEMOS=${NUM_DEMOS} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT}"
 df -h "${REPO_ROOT}" "${JOB_TMPDIR}" || true
 nvidia-smi
 
-source .venv/bin/activate
-uv run scripts/low_data_train.py \
-  --experiment-config "${EXPERIMENT_CONFIG}" \
-  --stage target \
-  --target-task-id "${TARGET_TASK_ID}" \
-  --method "${METHOD}" \
-  --num-demos "${NUM_DEMOS}" \
-  --seed "${SEED}" \
-  --descriptor-out "${DESCRIPTOR}"
-deactivate
+REUSE_CHECKPOINT=$(uv run python - "${PERSISTENT_MANIFEST}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.exists():
+    print(0)
+else:
+    manifest = json.loads(path.read_text())
+    print(int((pathlib.Path(manifest["checkpoint_dir"]) / "params").is_dir()))
+PY
+)
+if [ "${REUSE_CHECKPOINT}" = 1 ]; then
+  echo "Reusing trained target checkpoint from ${PERSISTENT_MANIFEST}"
+  DESCRIPTOR="${PERSISTENT_MANIFEST}"
+else
+  source .venv/bin/activate
+  uv run scripts/low_data_train.py \
+    --experiment-config "${EXPERIMENT_CONFIG}" \
+    --stage target \
+    --target-suite "${TARGET_SUITE}" \
+    --target-task-id "${TARGET_TASK_ID}" \
+    --method "${METHOD}" \
+    --num-demos "${NUM_DEMOS}" \
+    --seed "${SEED}" \
+    --checkpoint-base-dir "${JOB_TMPDIR}/checkpoints" \
+    --descriptor-out "${DESCRIPTOR}"
+  deactivate
+fi
 
 DELETE_ARGS=()
 if [ "${DELETE_TARGET_CHECKPOINT}" = 1 ]; then

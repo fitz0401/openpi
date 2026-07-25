@@ -68,3 +68,15 @@ def test_formal_configs_lock_finetune_baseline_protocol():
         assert config.target.demos_for_method("full") == (1, 10, 50)
         assert config.target.demos_for_method("lora") == (1, 2, 5, 10, 20, 50)
         assert len(target_grid(config)) == 18
+
+
+def test_main_config_has_unified_18_source_22_target_grid():
+    config = load_experiment_config(_REPO_ROOT / "examples/low_data/configs/libero_main_18source_22target.json")
+    assert len(config.source_task_refs()) == 18
+    assert len(config.target_task_refs()) == 22
+    assert len(set(config.source_task_refs())) == 18
+    assert not set(config.source_task_refs()) & set(config.target_task_refs())
+    assert config.target.demos_for_method("lora") == (1, 5, 10, 25, 50)
+    assert config.target.demos_for_method("full") == (1, 10, 50)
+    assert len(target_grid(config)) == 176
+    assert target_grid(config)[0] == ("libero_spatial", 5, "lora", 1, 0)

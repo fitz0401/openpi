@@ -18,11 +18,13 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
 import openpi.training.config as _config
 from openpi.training.continual.subsample import EpisodeSubsetSpec
+from openpi.training.low_data.experiment import TaskRef
 from openpi.training.low_data.experiment import jsonable
 from openpi.training.low_data.experiment import load_experiment_config
 from openpi.training.low_data.experiment import nested_episode_subsets
-from openpi.training.low_data.experiment import resolve_suite_tasks
+from openpi.training.low_data.experiment import resolve_task_refs
 from openpi.training.low_data.experiment import subset_statistics
+from openpi.training.low_data.experiment import target_result_dir
 import openpi.training.weight_loaders as weight_loaders
 
 # ``uv run scripts/low_data_train.py`` puts scripts/ (not the repository root) on sys.path.
@@ -43,10 +45,12 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment-config", required=True, type=pathlib.Path)
     parser.add_argument("--stage", required=True, choices=("source", "target"))
+    parser.add_argument("--target-suite")
     parser.add_argument("--target-task-id", type=int)
     parser.add_argument("--method", choices=tuple(METHOD_CONFIGS))
     parser.add_argument("--num-demos", type=int)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--checkpoint-base-dir", type=pathlib.Path)
     parser.add_argument("--descriptor-out", type=pathlib.Path, default=None)
     return parser.parse_args()
 
@@ -71,7 +75,8 @@ def _write_json(path: pathlib.Path, payload: dict) -> None:
 
 def _build_source(args: argparse.Namespace, experiment, meta: LeRobotDatasetMetadata):
     base = _config.get_config(METHOD_CONFIGS["full"])
-    task_strings = resolve_suite_tasks(meta, experiment, experiment.source_task_ids)
+    source_refs = experiment.source_task_refs()
+    task_strings = resolve_task_refs(meta, experiment, source_refs)
     episode_indices = sorted(
         ep_idx for ep_idx, episode in meta.episodes.items() if any(task in episode["tasks"] for task in task_strings)
     )
@@ -91,7 +96,7 @@ def _build_source(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
     )
     cfg = dataclasses.replace(
         base,
-        checkpoint_base_dir=experiment.checkpoint_root,
+        checkpoint_base_dir=str(args.checkpoint_base_dir or experiment.checkpoint_root),
         exp_name=exp_name,
         data=data,
         weight_loader=weight_loaders.CheckpointWeightLoader(_params_path(experiment.base_checkpoint)),
@@ -107,11 +112,12 @@ def _build_source(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         "schema_version": 1,
         "stage": "source",
         "split_id": experiment.split_id,
-        "suite": experiment.suite,
         "task_order_index": experiment.task_order_index,
-        "source_task_ids": list(experiment.source_task_ids),
+        "source_task_ids": experiment.source_task_ids_by_suite(),
+        "source_tasks": [dataclasses.asdict(ref) for ref in source_refs],
         "source_task_strings": list(task_strings),
-        "target_task_ids": list(experiment.target_task_ids),
+        "target_task_ids": experiment.target_task_ids_by_suite(),
+        "target_tasks": [dataclasses.asdict(ref) for ref in experiment.target_task_refs()],
         "base_checkpoint": experiment.base_checkpoint,
         "method": "full",
         "seed": args.seed,
@@ -127,6 +133,7 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
     missing = [
         name
         for name, value in (
+            ("--target-suite", args.target_suite),
             ("--target-task-id", args.target_task_id),
             ("--method", args.method),
             ("--num-demos", args.num_demos),
@@ -135,8 +142,9 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
     ]
     if missing:
         raise SystemExit(f"Target stage requires: {', '.join(missing)}")
-    if args.target_task_id not in experiment.target_task_ids:
-        raise ValueError(f"target_task_id must be one of {experiment.target_task_ids}")
+    target_ref = TaskRef(args.target_suite, args.target_task_id)
+    if target_ref not in experiment.target_task_refs():
+        raise ValueError(f"Target must be one of {experiment.target_task_refs()}; got {target_ref}")
     if args.method not in experiment.target.methods:
         raise ValueError(f"method must be one of {experiment.target.methods}")
     method_demos = experiment.target.demos_for_method(args.method)
@@ -146,10 +154,10 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         raise ValueError(f"seed must be one of {experiment.target.seeds}")
 
     base = _config.get_config(METHOD_CONFIGS[args.method])
-    task_string = resolve_suite_tasks(meta, experiment, (args.target_task_id,))[0]
+    task_string = resolve_task_refs(meta, experiment, (target_ref,))[0]
     nested = nested_episode_subsets(
         meta,
-        suite=experiment.suite,
+        suite=args.target_suite,
         task_id=args.target_task_id,
         task=task_string,
         seed=args.seed,
@@ -176,16 +184,18 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
     source_manifest = json.loads(source_manifest_path.read_text())
     source_checkpoint = source_manifest["checkpoint_dir"]
 
-    result_dir = (
-        pathlib.Path(experiment.results_root)
-        / experiment.split_id
-        / "runs"
-        / args.method
-        / f"task{args.target_task_id}"
-        / f"demos{args.num_demos}"
+    result_dir = target_result_dir(
+        experiment,
+        args.target_suite,
+        args.target_task_id,
+        args.method,
+        args.num_demos,
+        args.seed,
     )
-    result_dir /= f"seed{args.seed}"
-    exp_name = f"{experiment.split_id}/targets/{args.method}/task{args.target_task_id}/demos{args.num_demos}"
+    exp_name = (
+        f"{experiment.split_id}/targets/{args.method}/{args.target_suite}/"
+        f"task{args.target_task_id}/demos{args.num_demos}"
+    )
     exp_name += f"/seed{args.seed}"
     subset_manifest = result_dir / "trajectory_subset_manifest.json"
     data = dataclasses.replace(
@@ -195,7 +205,7 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
     )
     cfg = dataclasses.replace(
         base,
-        checkpoint_base_dir=experiment.checkpoint_root,
+        checkpoint_base_dir=str(args.checkpoint_base_dir or experiment.checkpoint_root),
         exp_name=exp_name,
         data=data,
         weight_loader=weight_loaders.CheckpointWeightLoader(_params_path(source_checkpoint)),
@@ -211,9 +221,10 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         "schema_version": 1,
         "stage": "target",
         "split_id": experiment.split_id,
-        "suite": experiment.suite,
+        "suite": args.target_suite,
         "task_order_index": experiment.task_order_index,
-        "source_task_ids": list(experiment.source_task_ids),
+        "source_task_ids": experiment.source_task_ids_by_suite(),
+        "source_tasks": [dataclasses.asdict(ref) for ref in experiment.source_task_refs()],
         "target_task_id": args.target_task_id,
         "target_task_string": task_string,
         "method": args.method,

@@ -28,6 +28,52 @@ seeds, rollout count, and storage roots. The fine-tune baseline protocol is fixe
 `min_steps=25`. Full FT uses sparse anchors `[1, 10, 50]`; LoRA keeps the complete grid
 `[1, 2, 5, 10, 20, 50]`.
 
+## Formal multi-suite run
+
+`configs/libero_main_18source_22target.json` defines one unified Stage-A checkpoint trained on:
+
+- Spatial source IDs `[4, 2, 9, 7, 6, 8]`
+- Object source IDs `[4, 2, 9, 7, 6, 8]`
+- Goal source IDs `[4, 2, 9, 7, 6, 8]`
+
+Its independent Stage-B targets are Spatial/Object/Goal IDs `[5, 1, 3, 0]` and all ten
+`libero_10` tasks. Source sets are configurable per suite through `task_splits`; Stage A always
+produces one checkpoint from the union. The formal grid uses LoRA demos `[1, 5, 10, 25, 50]`,
+Full FT anchors `[1, 10, 50]`, seed 0, and the same capped-effective-epochs rule as the pilot.
+There are 22 zero-shot evaluations and 176 independent adaptation runs.
+
+Submit the complete dependency chain from the repository root:
+
+```bash
+MAX_CONCURRENT=2 scripts/submit_low_data_main.sh
+```
+
+This submits Stage A, a `0-175%2` Stage-B PBS array dependent on successful Stage A, and a final
+CPU job dependent on termination of the array. At most two target checkpoints exist concurrently.
+Successful and failed Stage-B jobs delete their transient checkpoints by default; manifests,
+rollout results, scheduler logs, the unified Stage-A checkpoint, and aggregate tables remain.
+Completed cells are skipped on resubmission, and a trained checkpoint is reused when only its
+evaluation needs to be retried.
+
+The final job writes:
+
+```text
+results/low_data_main/libero_main_18s22t_v0/
+  workflow_status.json
+  tidy_results.csv
+  tidy_results.jsonl
+  plots/
+results/low_data_main/libero_main_18s22t_v0.tar.gz
+```
+
+`workflow_status.json` lists any missing array cells, so a partial run is still diagnosable and
+downloadable. Download the compact result archive with:
+
+```bash
+scp vsc39029@tier1.hpc.ugent.be:/dodrio/scratch/projects/starting_2026_047/openpi/results/low_data_main/libero_main_18s22t_v0.tar.gz \
+  ./experiments/
+```
+
 ## Cluster commands
 
 Compute the shared LIBERO normalization statistics once:
@@ -54,7 +100,7 @@ Run one Stage-B cell (Spatial target 8, full FT, ten demos, seed 0):
 
 ```bash
 qsub -v EXPERIMENT_CONFIG=examples/low_data/configs/libero_spatial_8source_2target.json,\
-TARGET_TASK_ID=8,METHOD=full,NUM_DEMOS=10,SEED=0 \
+TARGET_SUITE=libero_spatial,TARGET_TASK_ID=8,METHOD=full,NUM_DEMOS=10,SEED=0 \
   scripts/job_low_data_stage_b.sh
 ```
 
@@ -134,7 +180,7 @@ results/low_data_pilot/<split_id>/source/
 Each target result is independent and persists after its checkpoint is deleted:
 
 ```text
-results/low_data_pilot/<split_id>/runs/<method>/task<id>/demos<n>/seed<s>/
+results/low_data_pilot/<split_id>/runs/<method>/<suite>/task<id>/demos<n>/seed<s>/
   resolved_train_config.json
   trajectory_subset_manifest.json
   train_manifest.json

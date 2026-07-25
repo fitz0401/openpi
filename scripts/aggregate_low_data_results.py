@@ -25,24 +25,28 @@ def main() -> None:
     zero_shot_rates = {}
     if zero_shot_path.exists():
         payload = json.loads(zero_shot_path.read_text())
-        zero_shot_rates = {int(key): float(value) for key, value in payload["target_success_zero_shot"].items()}
+        zero_shot_rates = {str(key): float(value) for key, value in payload["target_success_zero_shot"].items()}
     for row in rows:
         # Preserve readability of pilot rows written before budget metadata was introduced.
         row.setdefault("budget_name", "legacy_fixed500")
         row.setdefault("budget_mode", "legacy_fixed_steps")
-        if row["target_task_id"] in zero_shot_rates:
-            baseline = zero_shot_rates[row["target_task_id"]]
+        target_key = f"{row['suite']}:{row['target_task_id']}"
+        legacy_key = str(row["target_task_id"])
+        if target_key in zero_shot_rates or legacy_key in zero_shot_rates:
+            baseline = zero_shot_rates.get(target_key, zero_shot_rates.get(legacy_key))
             row["target_success_zero_shot"] = baseline
             row["target_success_gain"] = (
                 row["success_rate"] - baseline if row["evaluated_task_role"] == "target" else None
             )
     rows.sort(
         key=lambda row: (
+            row["suite"],
             row["target_task_id"],
             row["method"],
             row["num_demos"],
             row["budget_name"],
             row["seed"],
+            row.get("evaluated_task_suite", row["suite"]),
             row["evaluated_task_id"],
         )
     )
