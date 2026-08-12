@@ -3,7 +3,7 @@
 #PBS -l walltime=48:00:00
 #PBS -A starting_2026_047
 
-# Train and evaluate ONE independent (target, method, num_demos, seed) adaptation run.
+# Train and evaluate ONE independent (target, method, data_budget, seed) adaptation run.
 
 set -euo pipefail
 
@@ -30,13 +30,13 @@ except IndexError as exc:
     raise SystemExit(f"Array index {sys.argv[2]} is outside the Stage-B grid") from exc
 PY
   )
-  read -r TARGET_SUITE TARGET_TASK_ID METHOD NUM_DEMOS SEED <<< "${GRID_ENTRY}"
+  read -r TARGET_SUITE TARGET_TASK_ID METHOD DATA_BUDGET SEED <<< "${GRID_ENTRY}"
 fi
 
 TARGET_SUITE=${TARGET_SUITE:?Set TARGET_SUITE or submit as a PBS array}
 TARGET_TASK_ID=${TARGET_TASK_ID:?Set TARGET_TASK_ID or submit as a PBS array}
 METHOD=${METHOD:?Set METHOD to full or lora}
-NUM_DEMOS=${NUM_DEMOS:?Set NUM_DEMOS}
+DATA_BUDGET=${DATA_BUDGET:?Set DATA_BUDGET to 1, 5, 10, 25, or all_available}
 SEED=${SEED:-0}
 DELETE_TARGET_CHECKPOINT=${DELETE_TARGET_CHECKPOINT:-1}
 DELETE_TARGET_CHECKPOINT_ON_FAILURE=${DELETE_TARGET_CHECKPOINT_ON_FAILURE:-1}
@@ -48,12 +48,12 @@ DESCRIPTOR="${JOB_TMPDIR}/low_data_target_train_manifest.json"
 mkdir -p "${JOB_TMPDIR}"
 
 RESULT_DIR=$(uv run python - "${EXPERIMENT_CONFIG}" "${TARGET_SUITE}" "${TARGET_TASK_ID}" \
-  "${METHOD}" "${NUM_DEMOS}" "${SEED}" <<'PY'
+  "${METHOD}" "${DATA_BUDGET}" "${SEED}" <<'PY'
 import sys
 from openpi.training.low_data.experiment import load_experiment_config, target_result_dir
 
 config = load_experiment_config(sys.argv[1])
-print(target_result_dir(config, sys.argv[2], int(sys.argv[3]), sys.argv[4], int(sys.argv[5]), int(sys.argv[6])))
+print(target_result_dir(config, sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5], int(sys.argv[6])))
 PY
 )
 PERSISTENT_MANIFEST="${RESULT_DIR}/train_manifest.json"
@@ -133,7 +133,7 @@ config_file.write_text(json.dumps({
 PY
 
 echo "===== LOW-DATA STAGE B ====="
-echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_SUITE}:${TARGET_TASK_ID} METHOD=${METHOD} DEMOS=${NUM_DEMOS} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT}"
+echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_SUITE}:${TARGET_TASK_ID} METHOD=${METHOD} DATA_BUDGET=${DATA_BUDGET} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT}"
 df -h "${REPO_ROOT}" "${JOB_TMPDIR}" || true
 nvidia-smi
 
@@ -161,7 +161,7 @@ else
     --target-suite "${TARGET_SUITE}" \
     --target-task-id "${TARGET_TASK_ID}" \
     --method "${METHOD}" \
-    --num-demos "${NUM_DEMOS}" \
+    --data-budget "${DATA_BUDGET}" \
     --seed "${SEED}" \
     --checkpoint-base-dir "${JOB_TMPDIR}/checkpoints" \
     --descriptor-out "${DESCRIPTOR}"

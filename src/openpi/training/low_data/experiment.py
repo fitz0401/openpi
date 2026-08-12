@@ -1,4 +1,4 @@
-"""Versioned experiment config and deterministic subset helpers for the low-data pilot."""
+"""Frozen experiment config and deterministic subset helpers for low-data adaptation."""
 
 from __future__ import annotations
 
@@ -63,9 +63,15 @@ LIBERO_SUITE_TASKS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-PILOT_LORA_DEMO_GRID = (1, 2, 5, 10, 20, 50)
-MAIN_LORA_DEMO_GRID = (1, 5, 10, 25, 50)
-FULL_FT_DEMO_ANCHORS = (1, 10, 50)
+PRIMARY_DATA_BUDGETS = ("1", "5", "10", "25")
+ALL_AVAILABLE_BUDGET = "all_available"
+FINAL_DATA_BUDGETS = (*PRIMARY_DATA_BUDGETS, ALL_AVAILABLE_BUDGET)
+OFFICIAL_ROLLOUT_HORIZONS = {
+    "libero_spatial": 220,
+    "libero_object": 280,
+    "libero_goal": 300,
+    "libero_10": 520,
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -75,48 +81,79 @@ class SourceRecipe:
 
 
 @dataclasses.dataclass(frozen=True)
-class TrainingBudget:
-    name: str
-    mode: str
-    max_steps: int
-    max_effective_epochs: float
-    min_steps: int = 1
+class AdaptationRecipe:
+    data_budgets: tuple[str, ...]
+    methods: tuple[str, ...]
+    method_data_budgets: dict[str, tuple[str, ...]]
+    seeds: tuple[int, ...]
+    effective_epochs: float
+    per_device_batch_size: int = 32
+    world_size: int = 1
+    gradient_accumulation_steps: int = 1
+    hard_max_steps: int | None = None
 
     def validate(self) -> None:
-        if not self.name or any(char.isspace() for char in self.name):
-            raise ValueError("Training budget names must be non-empty and contain no whitespace.")
-        if self.mode != "capped_effective_epochs":
-            raise ValueError("Fine-tune baselines require mode='capped_effective_epochs'.")
-        if self.max_steps <= 0:
-            raise ValueError(f"Budget {self.name!r}: max_steps must be positive.")
-        if self.max_effective_epochs <= 0:
-            raise ValueError(f"Budget {self.name!r}: max_effective_epochs must be positive.")
-        if self.min_steps <= 0 or self.min_steps > self.max_steps:
-            raise ValueError(f"Budget {self.name!r}: require 0 < min_steps <= max_steps.")
+        if self.data_budgets != FINAL_DATA_BUDGETS:
+            raise ValueError(f"Final protocol requires data_budgets={FINAL_DATA_BUDGETS}.")
+        if set(self.methods) != {"full", "lora"} or len(self.methods) != 2:
+            raise ValueError("Final protocol requires both and only 'full' and 'lora'.")
+        expected_method_budgets = {
+            "lora": FINAL_DATA_BUDGETS,
+            "full": ("1", "10", ALL_AVAILABLE_BUDGET),
+        }
+        if self.method_data_budgets != expected_method_budgets:
+            raise ValueError(f"Final protocol requires method_data_budgets={expected_method_budgets}.")
+        if not self.seeds or len(self.seeds) != len(set(self.seeds)):
+            raise ValueError("Adaptation seeds must be non-empty and unique.")
+        if self.effective_epochs <= 0:
+            raise ValueError("adaptation.effective_epochs must be positive.")
+        if self.per_device_batch_size <= 0 or self.world_size <= 0:
+            raise ValueError("Batch size and world size must be positive.")
+        if self.gradient_accumulation_steps != 1:
+            raise ValueError("The existing trainer does not support gradient accumulation; use 1.")
+        if self.hard_max_steps is not None and self.hard_max_steps <= 0:
+            raise ValueError("adaptation.hard_max_steps must be null or positive.")
 
-    def resolve_steps(self, *, num_training_windows: int, batch_size: int) -> int:
-        epoch_steps = math.ceil(self.max_effective_epochs * num_training_windows / batch_size)
-        return max(self.min_steps, min(self.max_steps, epoch_steps))
+    @property
+    def global_batch_size(self) -> int:
+        return self.per_device_batch_size * self.world_size * self.gradient_accumulation_steps
 
+    def data_budgets_for_method(self, method: str) -> tuple[str, ...]:
+        return self.method_data_budgets[method]
 
-@dataclasses.dataclass(frozen=True)
-class TargetRecipe:
-    num_demos: tuple[int, ...]
-    methods: tuple[str, ...]
-    seeds: tuple[int, ...]
-    budget: TrainingBudget
-    method_num_demos: dict[str, tuple[int, ...]]
-    batch_size: int = 32
-
-    def demos_for_method(self, method: str) -> tuple[int, ...]:
-        return self.method_num_demos.get(method, self.num_demos)
+    def calculate_optimizer_steps(self, *, num_training_examples: int) -> int:
+        if num_training_examples <= 0:
+            raise ValueError("num_training_examples must be positive.")
+        calculated = math.ceil(self.effective_epochs * num_training_examples / self.global_batch_size)
+        if self.hard_max_steps is not None and calculated > self.hard_max_steps:
+            raise ValueError(
+                "Protocol violation: calculated optimizer budget "
+                f"{calculated} exceeds hard_max_steps={self.hard_max_steps}; refusing to truncate."
+            )
+        return calculated
 
 
 @dataclasses.dataclass(frozen=True)
 class EvalRecipe:
     num_trials: int = 20
-    max_steps: int = 280
     replan_steps: int = 5
+    rollout_horizons: dict[str, int] = dataclasses.field(default_factory=lambda: dict(OFFICIAL_ROLLOUT_HORIZONS))
+    allow_nonstandard_rollout_horizons: bool = False
+
+    def validate(self) -> None:
+        if self.num_trials <= 0 or self.replan_steps <= 0:
+            raise ValueError("Evaluation trial and replanning counts must be positive.")
+        if not self.allow_nonstandard_rollout_horizons and self.rollout_horizons != OFFICIAL_ROLLOUT_HORIZONS:
+            raise ValueError(
+                f"Final protocol requires official rollout_horizons={OFFICIAL_ROLLOUT_HORIZONS}; "
+                "set allow_nonstandard_rollout_horizons=true only for an explicitly labelled debug run."
+            )
+        missing = set(OFFICIAL_ROLLOUT_HORIZONS) - set(self.rollout_horizons)
+        if missing or any(horizon <= 0 for horizon in self.rollout_horizons.values()):
+            raise ValueError(f"Evaluation rollout horizons are missing or invalid: {sorted(missing)}")
+
+    def rollout_horizon(self, suite: str) -> int:
+        return self.rollout_horizons[suite]
 
 
 @dataclasses.dataclass(frozen=True, order=True)
@@ -146,12 +183,15 @@ class PilotExperimentConfig:
     checkpoint_root: str
     results_root: str
     source: SourceRecipe
-    target: TargetRecipe
+    adaptation: AdaptationRecipe
     evaluation: EvalRecipe
 
     def validate(self) -> None:
-        if self.schema_version not in (1, 2):
-            raise ValueError(f"Unsupported schema_version={self.schema_version}")
+        if self.schema_version != 3:
+            raise ValueError(
+                f"schema_version={self.schema_version} is historical and cannot launch future runs; "
+                "the frozen protocol requires schema_version=3."
+            )
         if self.task_order_index != 0:
             raise ValueError("Low-data task IDs currently use LIBERO task_order_index=0 only.")
         if not self.task_splits:
@@ -175,28 +215,10 @@ class PilotExperimentConfig:
         target = set(self.target_task_refs())
         if not source or not target:
             raise ValueError("Source and target task sets must both be non-empty.")
-        if any(n <= 0 for n in self.target.num_demos):
-            raise ValueError("All num_demos values must be positive.")
-        if tuple(sorted(set(self.target.num_demos))) != self.target.num_demos:
-            raise ValueError("target.num_demos must be sorted and unique.")
-        if not set(self.target.methods) <= {"full", "lora"}:
-            raise ValueError("Pilot methods currently support only 'full' and 'lora'.")
-        if set(self.target.method_num_demos) - set(self.target.methods):
-            raise ValueError("method_num_demos contains a method not listed in target.methods.")
-        for method in self.target.methods:
-            demos = self.target.demos_for_method(method)
-            if not demos or tuple(sorted(set(demos))) != demos:
-                raise ValueError(f"Demo values for {method!r} must be non-empty, sorted, and unique.")
-            if not set(demos) <= set(self.target.num_demos):
-                raise ValueError(f"Demo values for {method!r} must be a subset of target.num_demos.")
-        if "full" in self.target.methods and self.target.demos_for_method("full") != FULL_FT_DEMO_ANCHORS:
-            raise ValueError(f"Full FT protocol requires sparse demo anchors {FULL_FT_DEMO_ANCHORS}.")
-        expected_lora_grid = MAIN_LORA_DEMO_GRID if self.schema_version == 2 else PILOT_LORA_DEMO_GRID
-        if "lora" in self.target.methods and self.target.demos_for_method("lora") != expected_lora_grid:
-            raise ValueError(f"LoRA protocol requires the complete demo grid {expected_lora_grid}.")
         if self.source.optimizer_steps <= 0:
             raise ValueError("Source optimizer-step budget must be positive.")
-        self.target.budget.validate()
+        self.adaptation.validate()
+        self.evaluation.validate()
 
     @property
     def suite(self) -> str:
@@ -239,6 +261,12 @@ class PilotExperimentConfig:
 def load_experiment_config(path: str | pathlib.Path) -> PilotExperimentConfig:
     path = pathlib.Path(path)
     raw = json.loads(path.read_text())
+    schema_version = int(raw["schema_version"])
+    if schema_version != 3:
+        raise ValueError(
+            f"schema_version={schema_version} in {path} is historical and cannot launch future runs; "
+            "the frozen protocol requires schema_version=3."
+        )
     if "task_splits" in raw:
         task_splits = tuple(
             SuiteSplit(
@@ -257,7 +285,7 @@ def load_experiment_config(path: str | pathlib.Path) -> PilotExperimentConfig:
             ),
         )
     config = PilotExperimentConfig(
-        schema_version=int(raw["schema_version"]),
+        schema_version=schema_version,
         split_id=str(raw["split_id"]),
         task_order_index=int(raw.get("task_order_index", 0)),
         task_splits=task_splits,
@@ -265,31 +293,50 @@ def load_experiment_config(path: str | pathlib.Path) -> PilotExperimentConfig:
         checkpoint_root=str(raw.get("checkpoint_root", "./checkpoints/low_data_pilot")),
         results_root=str(raw.get("results_root", "./results/low_data_pilot")),
         source=SourceRecipe(**raw["source"]),
-        target=TargetRecipe(
-            num_demos=tuple(int(x) for x in raw["target"]["num_demos"]),
-            methods=tuple(str(x) for x in raw["target"]["methods"]),
-            seeds=tuple(int(x) for x in raw["target"]["seeds"]),
-            budget=TrainingBudget(**raw["target"]["budget"]),
-            method_num_demos={
-                str(method): tuple(int(x) for x in demos)
-                for method, demos in raw["target"].get("method_num_demos", {}).items()
+        adaptation=AdaptationRecipe(
+            data_budgets=tuple(str(x) for x in raw["adaptation"]["data_budgets"]),
+            methods=tuple(str(x) for x in raw["adaptation"]["methods"]),
+            method_data_budgets={
+                str(method): tuple(str(x) for x in budgets)
+                for method, budgets in raw["adaptation"]["method_data_budgets"].items()
             },
-            batch_size=int(raw["target"].get("batch_size", 32)),
+            seeds=tuple(int(x) for x in raw["adaptation"]["seeds"]),
+            effective_epochs=float(raw["adaptation"]["effective_epochs"]),
+            per_device_batch_size=int(raw["adaptation"].get("per_device_batch_size", 32)),
+            world_size=int(raw["adaptation"].get("world_size", 1)),
+            gradient_accumulation_steps=int(raw["adaptation"].get("gradient_accumulation_steps", 1)),
+            hard_max_steps=(
+                int(raw["adaptation"]["hard_max_steps"])
+                if raw["adaptation"].get("hard_max_steps") is not None
+                else None
+            ),
         ),
-        evaluation=EvalRecipe(**raw.get("evaluation", {})),
+        evaluation=EvalRecipe(
+            num_trials=int(raw.get("evaluation", {}).get("num_trials", 20)),
+            replan_steps=int(raw.get("evaluation", {}).get("replan_steps", 5)),
+            rollout_horizons={
+                str(suite): int(horizon)
+                for suite, horizon in raw.get("evaluation", {})
+                .get("rollout_horizons", OFFICIAL_ROLLOUT_HORIZONS)
+                .items()
+            },
+            allow_nonstandard_rollout_horizons=bool(
+                raw.get("evaluation", {}).get("allow_nonstandard_rollout_horizons", False)
+            ),
+        ),
     )
     config.validate()
     return config
 
 
-def target_grid(config: PilotExperimentConfig) -> list[tuple[str, int, str, int, int]]:
-    """Return deterministic (suite, target, method, demos, seed) Stage-B cells."""
+def target_grid(config: PilotExperimentConfig) -> list[tuple[str, int, str, str, int]]:
+    """Return deterministic (suite, target, method, requested_data_budget, seed) cells."""
     return [
-        (target.suite, target.task_id, method, demos, seed)
+        (target.suite, target.task_id, method, data_budget, seed)
         for target in config.target_task_refs()
-        for method in config.target.methods
-        for demos in config.target.demos_for_method(method)
-        for seed in config.target.seeds
+        for method in config.adaptation.methods
+        for data_budget in config.adaptation.data_budgets_for_method(method)
+        for seed in config.adaptation.seeds
     ]
 
 
@@ -298,7 +345,7 @@ def target_result_dir(
     suite: str,
     task_id: int,
     method: str,
-    num_demos: int,
+    requested_data_budget: str,
     seed: int,
 ) -> pathlib.Path:
     return (
@@ -308,7 +355,7 @@ def target_result_dir(
         / method
         / suite
         / f"task{task_id}"
-        / f"demos{num_demos}"
+        / f"budget{requested_data_budget}"
         / f"seed{seed}"
     )
 
@@ -329,27 +376,45 @@ def nested_episode_subsets(
     task_id: int,
     task: str,
     seed: int,
-    budgets: tuple[int, ...],
-) -> dict[int, list[int]]:
-    """Shuffle once, then take prefixes so every requested demo subset is nested."""
+    data_budgets: tuple[str, ...],
+) -> tuple[list[int], dict[str, list[int]]]:
+    """Shuffle once and use prefixes, including an explicitly labelled all-available set."""
     episodes = episodes_for_task(meta, task)
+    if not episodes:
+        raise ValueError(f"No trajectories found for {suite}:{task_id} ({task!r}).")
     seed_material = f"low-data-v1:{suite}:{task_id}:{seed}".encode()
     permutation_seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")
     random.Random(permutation_seed).shuffle(episodes)
-    return {budget: sorted(episodes[: min(budget, len(episodes))]) for budget in budgets}
+    subsets = {}
+    for budget in data_budgets:
+        if budget == ALL_AVAILABLE_BUDGET:
+            subsets[budget] = list(episodes)
+            continue
+        count = int(budget)
+        if count > len(episodes):
+            raise ValueError(f"Requested D{count} for {suite}:{task_id}, but only {len(episodes)} trajectories exist.")
+        subsets[budget] = episodes[:count]
+    return episodes, subsets
 
 
-def subset_statistics(meta: Any, episode_indices: list[int], *, optimizer_steps: int, batch_size: int) -> dict:
+def subset_statistics(
+    meta: Any,
+    episode_indices: list[int],
+    *,
+    optimizer_steps: int,
+    global_batch_size: int,
+) -> dict:
     num_transitions = sum(int(meta.episodes[index]["length"]) for index in episode_indices)
-    num_training_windows = num_transitions  # one action-window start per selected LeRobot frame
-    samples_seen = optimizer_steps * batch_size
+    num_training_examples = num_transitions  # one valid action-window start per selected LeRobot frame
+    samples_seen = optimizer_steps * global_batch_size
     return {
         "num_selected_trajectories": len(episode_indices),
         "num_transitions": num_transitions,
-        "num_training_windows": num_training_windows,
+        "num_training_examples": num_training_examples,
+        "num_training_windows": num_training_examples,  # Legacy alias for historical analysis tools.
         "samples_seen": samples_seen,
         "optimizer_steps": optimizer_steps,
-        "effective_epochs": samples_seen / max(num_training_windows, 1),
+        "achieved_effective_epochs": samples_seen / max(num_training_examples, 1),
     }
 
 

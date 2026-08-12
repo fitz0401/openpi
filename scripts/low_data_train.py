@@ -48,7 +48,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--target-suite")
     parser.add_argument("--target-task-id", type=int)
     parser.add_argument("--method", choices=tuple(METHOD_CONFIGS))
-    parser.add_argument("--num-demos", type=int)
+    parser.add_argument("--data-budget")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--checkpoint-base-dir", type=pathlib.Path)
     parser.add_argument("--descriptor-out", type=pathlib.Path, default=None)
@@ -84,7 +84,7 @@ def _build_source(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         meta,
         episode_indices,
         optimizer_steps=experiment.source.optimizer_steps,
-        batch_size=experiment.source.batch_size,
+        global_batch_size=experiment.source.batch_size,
     )
     result_dir = pathlib.Path(experiment.results_root) / experiment.split_id / "source"
     exp_name = f"{experiment.split_id}/source"
@@ -136,7 +136,7 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
             ("--target-suite", args.target_suite),
             ("--target-task-id", args.target_task_id),
             ("--method", args.method),
-            ("--num-demos", args.num_demos),
+            ("--data-budget", args.data_budget),
         )
         if value is None
     ]
@@ -145,36 +145,35 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
     target_ref = TaskRef(args.target_suite, args.target_task_id)
     if target_ref not in experiment.target_task_refs():
         raise ValueError(f"Target must be one of {experiment.target_task_refs()}; got {target_ref}")
-    if args.method not in experiment.target.methods:
-        raise ValueError(f"method must be one of {experiment.target.methods}")
-    method_demos = experiment.target.demos_for_method(args.method)
-    if args.num_demos not in method_demos:
-        raise ValueError(f"num_demos for {args.method} must be one of {method_demos}")
-    if args.seed not in experiment.target.seeds:
-        raise ValueError(f"seed must be one of {experiment.target.seeds}")
+    adaptation = experiment.adaptation
+    if args.method not in adaptation.methods:
+        raise ValueError(f"method must be one of {adaptation.methods}")
+    method_data_budgets = adaptation.data_budgets_for_method(args.method)
+    if args.data_budget not in method_data_budgets:
+        raise ValueError(f"data_budget for {args.method} must be one of {method_data_budgets}")
+    if args.seed not in adaptation.seeds:
+        raise ValueError(f"seed must be one of {adaptation.seeds}")
 
     base = _config.get_config(METHOD_CONFIGS[args.method])
     task_string = resolve_task_refs(meta, experiment, (target_ref,))[0]
-    nested = nested_episode_subsets(
+    trajectory_order, nested = nested_episode_subsets(
         meta,
         suite=args.target_suite,
         task_id=args.target_task_id,
         task=task_string,
         seed=args.seed,
-        budgets=experiment.target.num_demos,
+        data_budgets=adaptation.data_budgets,
     )
-    selected = nested[args.num_demos]
-    budget = experiment.target.budget
-    num_training_windows = sum(int(meta.episodes[index]["length"]) for index in selected)
-    optimizer_steps = budget.resolve_steps(
-        num_training_windows=num_training_windows,
-        batch_size=experiment.target.batch_size,
+    selected = nested[args.data_budget]
+    num_training_examples = sum(int(meta.episodes[index]["length"]) for index in selected)
+    calculated_optimizer_steps = adaptation.calculate_optimizer_steps(
+        num_training_examples=num_training_examples,
     )
     stats = subset_statistics(
         meta,
         selected,
-        optimizer_steps=optimizer_steps,
-        batch_size=experiment.target.batch_size,
+        optimizer_steps=calculated_optimizer_steps,
+        global_batch_size=adaptation.global_batch_size,
     )
     source_manifest_path = (
         pathlib.Path(experiment.results_root) / experiment.split_id / "source" / "train_manifest.json"
@@ -189,12 +188,12 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         args.target_suite,
         args.target_task_id,
         args.method,
-        args.num_demos,
+        args.data_budget,
         args.seed,
     )
     exp_name = (
         f"{experiment.split_id}/targets/{args.method}/{args.target_suite}/"
-        f"task{args.target_task_id}/demos{args.num_demos}"
+        f"task{args.target_task_id}/budget{args.data_budget}"
     )
     exp_name += f"/seed{args.seed}"
     subset_manifest = result_dir / "trajectory_subset_manifest.json"
@@ -210,32 +209,41 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         data=data,
         weight_loader=weight_loaders.CheckpointWeightLoader(_params_path(source_checkpoint)),
         seed=args.seed,
-        batch_size=experiment.target.batch_size,
-        num_train_steps=optimizer_steps,
-        save_interval=optimizer_steps,
+        batch_size=adaptation.global_batch_size,
+        num_train_steps=calculated_optimizer_steps,
+        save_interval=calculated_optimizer_steps,
         keep_period=None,
         overwrite=True,
         resume=False,
     )
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": "target",
         "split_id": experiment.split_id,
+        "source_split_id": experiment.split_id,
         "suite": args.target_suite,
+        "target_suite": args.target_suite,
         "task_order_index": experiment.task_order_index,
         "source_task_ids": experiment.source_task_ids_by_suite(),
         "source_tasks": [dataclasses.asdict(ref) for ref in experiment.source_task_refs()],
         "target_task_id": args.target_task_id,
         "target_task_string": task_string,
         "method": args.method,
-        "requested_num_demos": args.num_demos,
-        "budget_name": budget.name,
-        "budget_mode": budget.mode,
-        "training_budget": jsonable(budget),
+        "requested_data_budget": args.data_budget,
+        "actual_num_demos": len(selected),
+        "total_available_demos": len(trajectory_order),
+        "adaptation": jsonable(adaptation),
         "seed": args.seed,
+        "subset_seed": args.seed,
         "source_checkpoint": source_checkpoint,
         "selected_trajectory_ids": selected,
+        "deterministic_trajectory_order": trajectory_order,
         "nested_trajectory_subsets": {str(budget): indices for budget, indices in nested.items()},
+        "effective_epochs": adaptation.effective_epochs,
+        "num_training_examples": num_training_examples,
+        "global_batch_size": adaptation.global_batch_size,
+        "calculated_optimizer_steps": calculated_optimizer_steps,
+        "actual_optimizer_steps": None,
         **stats,
         "result_dir": str(result_dir.resolve()),
         "serve_config": base.name,
@@ -247,6 +255,15 @@ def main() -> None:
     args = _parse_args()
     logging.basicConfig(level=logging.INFO)
     experiment = load_experiment_config(args.experiment_config)
+    if args.stage == "target":
+        import jax
+
+        actual_world_size = jax.device_count()
+        if actual_world_size != experiment.adaptation.world_size:
+            raise RuntimeError(
+                f"Configured adaptation.world_size={experiment.adaptation.world_size}, "
+                f"but JAX sees {actual_world_size} devices."
+            )
     metadata = LeRobotDatasetMetadata("physical-intelligence/libero")
     cfg, result_dir, run_metadata = (
         _build_source(args, experiment, metadata)
@@ -256,12 +273,37 @@ def main() -> None:
     result_dir.mkdir(parents=True, exist_ok=True)
     _write_json(result_dir / "resolved_train_config.json", jsonable(cfg))
     _write_json(result_dir / "train_manifest.pending.json", run_metadata)
+    if run_metadata["stage"] == "target":
+        logging.info(
+            "Scientific adaptation budget: effective_epochs=%s num_training_examples=%d "
+            "global_batch_size=%d calculated_optimizer_steps=%d actual_optimizer_steps=pending "
+            "samples_seen=%d",
+            run_metadata["effective_epochs"],
+            run_metadata["num_training_examples"],
+            run_metadata["global_batch_size"],
+            run_metadata["calculated_optimizer_steps"],
+            run_metadata["samples_seen"],
+        )
 
     import scripts.train as train_main
 
     train_main.main(cfg)
     checkpoint_run_dir = pathlib.Path(cfg.checkpoint_dir)
     final_step = cfg.num_train_steps - 1
+    actual_optimizer_steps = final_step + 1
+    if run_metadata["stage"] == "target":
+        calculated_optimizer_steps = run_metadata["calculated_optimizer_steps"]
+        if actual_optimizer_steps != calculated_optimizer_steps:
+            raise AssertionError(
+                f"Protocol violation: actual_optimizer_steps={actual_optimizer_steps} != "
+                f"calculated_optimizer_steps={calculated_optimizer_steps}."
+            )
+        run_metadata["actual_optimizer_steps"] = actual_optimizer_steps
+        logging.info(
+            "Completed scientific adaptation budget: calculated_optimizer_steps=%d actual_optimizer_steps=%d",
+            calculated_optimizer_steps,
+            actual_optimizer_steps,
+        )
     checkpoint_dir = checkpoint_run_dir / str(final_step)
     if not (checkpoint_dir / "params").exists():
         raise FileNotFoundError(f"Final params were not saved: {checkpoint_dir / 'params'}")

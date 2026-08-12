@@ -14,17 +14,25 @@ import numpy as np
 plt.switch_backend("Agg")
 
 METHOD_COLORS = {"lora": "#4C78A8", "full": "#E45756"}
+DATA_BUDGET_POSITIONS = {"1": 1, "5": 5, "10": 10, "25": 25, "all_available": 50}
 
 
 def _mean(values: list[float]) -> float:
     return float(np.mean(values)) if values else float("nan")
 
 
+def _budget_position(data_budget: str) -> int:
+    return DATA_BUDGET_POSITIONS[data_budget] if data_budget in DATA_BUDGET_POSITIONS else int(data_budget)
+
+
 def _read_target_rows(path: pathlib.Path) -> list[dict]:
     with path.open(newline="") as file:
         rows = [row for row in csv.DictReader(file) if row["evaluated_task_role"] == "target"]
     for row in rows:
-        for field in ("target_task_id", "num_demos", "seed", "optimizer_steps"):
+        row["_frozen_protocol"] = bool(row.get("requested_data_budget"))
+        row["requested_data_budget"] = row.get("requested_data_budget") or row["num_demos"]
+        row["data_budget_position"] = _budget_position(row["requested_data_budget"])
+        for field in ("target_task_id", "seed", "optimizer_steps"):
             row[field] = int(row[field])
         for field in (
             "success_rate",
@@ -39,18 +47,23 @@ def _read_target_rows(path: pathlib.Path) -> list[dict]:
 
 def _plot_suite_curves(rows: list[dict], out_dir: pathlib.Path, field: str, ylabel: str, filename: str) -> None:
     suites = list(dict.fromkeys(row["suite"] for row in rows))
+    final_protocol = any(row["_frozen_protocol"] for row in rows)
     fig, axes = plt.subplots(1, len(suites), figsize=(6 * len(suites), 5), constrained_layout=True)
     for ax, suite in zip(np.atleast_1d(axes), suites, strict=True):
         suite_rows = [row for row in rows if row["suite"] == suite]
         for method in ("lora", "full"):
             selected = [row for row in suite_rows if row["method"] == method]
-            demos = sorted({row["num_demos"] for row in selected})
+            budgets = sorted({row["requested_data_budget"] for row in selected}, key=_budget_position)
             values = [
-                _mean([row[field] for row in selected if row["num_demos"] == demos_value]) for demos_value in demos
+                _mean([row[field] for row in selected if row["requested_data_budget"] == budget]) for budget in budgets
             ]
-            ax.plot(demos, values, marker="o", linewidth=2, color=METHOD_COLORS[method], label=method.upper())
+            positions = [_budget_position(budget) for budget in budgets]
+            ax.plot(positions, values, marker="o", linewidth=2, color=METHOD_COLORS[method], label=method.upper())
         ax.set_xscale("log")
-        ax.set_xticks([1, 5, 10, 25, 50], ["1", "5", "10", "25", "50"])
+        ax.set_xticks(
+            [1, 5, 10, 25, 50],
+            ["1", "5", "10", "25", "all" if final_protocol else "50"],
+        )
         ax.set_ylim(-0.03, 1.03)
         ax.set_title(suite)
         ax.set_xlabel("Complete target trajectories")
@@ -87,28 +100,32 @@ def _plot_zero_shot(rows: list[dict], out_dir: pathlib.Path) -> None:
 
 def _plot_target_heatmaps(rows: list[dict], out_dir: pathlib.Path) -> None:
     targets = list(dict.fromkeys((row["suite"], row["target_task_id"]) for row in rows))
-    demos = [0, 1, 5, 10, 25, 50]
+    final_protocol = any(row["_frozen_protocol"] for row in rows)
+    budgets = ["1", "5", "10", "25", "all_available"] if final_protocol else ["1", "5", "10", "25", "50"]
     fig, axes = plt.subplots(1, 2, figsize=(15, max(8, len(targets) * 0.42)), constrained_layout=True)
     for ax, method in zip(axes, ("lora", "full"), strict=True):
-        matrix = np.full((len(targets), len(demos)), np.nan)
+        matrix = np.full((len(targets), len(budgets) + 1), np.nan)
         for row_index, (suite, task_id) in enumerate(targets):
             target_rows = [row for row in rows if row["suite"] == suite and row["target_task_id"] == task_id]
             matrix[row_index, 0] = target_rows[0]["target_success_zero_shot"]
-            for column, num_demos in enumerate(demos[1:], start=1):
+            for column, budget in enumerate(budgets, start=1):
                 values = [
                     row["success_rate"]
                     for row in target_rows
-                    if row["method"] == method and row["num_demos"] == num_demos
+                    if row["method"] == method and row["requested_data_budget"] == budget
                 ]
                 if values:
                     matrix[row_index, column] = _mean(values)
         image = ax.imshow(matrix, vmin=0, vmax=1, cmap="viridis", aspect="auto")
-        ax.set_xticks(range(len(demos)), ["zero", "1", "5", "10", "25", "50"])
+        ax.set_xticks(
+            range(len(budgets) + 1),
+            ["zero", "1", "5", "10", "25", "all" if final_protocol else "50"],
+        )
         ax.set_yticks(
             range(len(targets)),
             [f"{suite.replace('libero_', '')}:{task_id}" for suite, task_id in targets],
         )
-        ax.set_xlabel("num_demos")
+        ax.set_xlabel("requested_data_budget")
         ax.set_title(method.upper())
     fig.colorbar(image, ax=axes.ravel().tolist(), label="Target success", shrink=0.75)
     fig.savefig(out_dir / "target_success_heatmaps.png", dpi=220)
@@ -137,9 +154,9 @@ def main() -> None:
     )
     _plot_target_heatmaps(rows, out_dir)
 
-    grouped: dict[tuple[str, str, int], list[dict]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     for row in rows:
-        grouped[(row["suite"], row["method"], row["num_demos"])].append(row)
+        grouped[(row["suite"], row["method"], row["requested_data_budget"])].append(row)
     summary = {
         "split_id": rows[0]["split_id"],
         "num_completed_runs": len(rows),
@@ -148,14 +165,16 @@ def main() -> None:
             {
                 "suite": suite,
                 "method": method,
-                "num_demos": demos,
+                "requested_data_budget": data_budget,
                 "num_runs": len(group),
                 "mean_target_success": _mean([row["success_rate"] for row in group]),
                 "mean_source_success_after": _mean([row["source_success_after"] for row in group]),
                 "mean_source_forgetting": _mean([row["source_forgetting"] for row in group]),
                 "mean_source_retention": _mean([row["source_retention"] for row in group]),
             }
-            for (suite, method, demos), group in sorted(grouped.items())
+            for (suite, method, data_budget), group in sorted(
+                grouped.items(), key=lambda item: (item[0][0], item[0][1], _budget_position(item[0][2]))
+            )
         ],
     }
     (out_dir / "plot_summary.json").write_text(json.dumps(summary, indent=2) + "\n")

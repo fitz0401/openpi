@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "split_id": "libero_main_18s22t_v0",
   "task_order_index": 0,
   "task_splits": [
@@ -25,32 +25,35 @@
     }
   ],
   "base_checkpoint": "gs://openpi-assets/checkpoints/pi05_base",
-  "checkpoint_root": "./checkpoints/low_data_main",
-  "results_root": "./results/low_data_main",
+  "checkpoint_root": "./checkpoints/low_data_final",
+  "results_root": "./results/low_data_final",
   "source": {
     "optimizer_steps": 4500,
     "batch_size": 32
   },
-  "target": {
-    "num_demos": [1, 5, 10, 25, 50],
+  "adaptation": {
+    "data_budgets": ["1", "5", "10", "25", "all_available"],
     "methods": ["lora", "full"],
-    "method_num_demos": {
-      "lora": [1, 5, 10, 25, 50],
-      "full": [1, 10, 50]
+    "method_data_budgets": {
+      "lora": ["1", "5", "10", "25", "all_available"],
+      "full": ["1", "10", "all_available"]
     },
     "seeds": [0],
-    "budget": {
-      "name": "capped10epochs",
-      "mode": "capped_effective_epochs",
-      "max_steps": 500,
-      "max_effective_epochs": 10.0,
-      "min_steps": 25
-    },
-    "batch_size": 32
+    "effective_epochs": 10.0,
+    "per_device_batch_size": 32,
+    "world_size": 1,
+    "gradient_accumulation_steps": 1,
+    "hard_max_steps": null
   },
   "evaluation": {
     "num_trials": 20,
-    "max_steps": 280,
-    "replan_steps": 5
+    "replan_steps": 5,
+    "rollout_horizons": {
+      "libero_spatial": 220,
+      "libero_object": 280,
+      "libero_goal": 300,
+      "libero_10": 520
+    },
+    "allow_nonstandard_rollout_horizons": false
   }
 }

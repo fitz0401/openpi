@@ -27,23 +27,29 @@ def main() -> None:
         payload = json.loads(zero_shot_path.read_text())
         zero_shot_rates = {str(key): float(value) for key, value in payload["target_success_zero_shot"].items()}
     for row in rows:
-        # Preserve readability of pilot rows written before budget metadata was introduced.
-        row.setdefault("budget_name", "legacy_fixed500")
-        row.setdefault("budget_mode", "legacy_fixed_steps")
+        # Historical rows remain readable; frozen-protocol rows use explicit data-budget fields.
+        is_frozen_protocol = "requested_data_budget" in row
+        row.setdefault("requested_data_budget", str(row.get("num_demos", "unknown")))
+        row.setdefault("actual_num_demos", row.get("num_selected_trajectories", row.get("num_demos")))
+        row.setdefault("budget_name", "fixed10epochs" if is_frozen_protocol else "legacy_fixed500")
+        row.setdefault("budget_mode", "fixed_effective_epochs" if is_frozen_protocol else "legacy_fixed_steps")
         target_key = f"{row['suite']}:{row['target_task_id']}"
         legacy_key = str(row["target_task_id"])
         if target_key in zero_shot_rates or legacy_key in zero_shot_rates:
             baseline = zero_shot_rates.get(target_key, zero_shot_rates.get(legacy_key))
             row["target_success_zero_shot"] = baseline
+            row["zero_shot_target_success"] = baseline
             row["target_success_gain"] = (
                 row["success_rate"] - baseline if row["evaluated_task_role"] == "target" else None
             )
+            row["target_gain"] = row["target_success_gain"]
+    budget_order = {"1": 1, "5": 5, "10": 10, "25": 25, "all_available": 10**9}
     rows.sort(
         key=lambda row: (
             row["suite"],
             row["target_task_id"],
             row["method"],
-            row["num_demos"],
+            budget_order.get(str(row["requested_data_budget"]), 10**8),
             row["budget_name"],
             row["seed"],
             row.get("evaluated_task_suite", row["suite"]),

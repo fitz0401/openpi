@@ -19,14 +19,14 @@ def main() -> None:
     result_root = pathlib.Path(config.results_root) / config.split_id
     missing = []
     completed = []
-    for suite, task_id, method, demos, seed in target_grid(config):
-        run_dir = target_result_dir(config, suite, task_id, method, demos, seed)
+    for suite, task_id, method, data_budget, seed in target_grid(config):
+        run_dir = target_result_dir(config, suite, task_id, method, data_budget, seed)
         cell = {
             "suite": suite,
             "target_task_id": task_id,
             "method": method,
-            "num_demos": demos,
-            "seed": seed,
+            "requested_data_budget": data_budget,
+            "subset_seed": seed,
         }
         if (run_dir / "tidy_results.jsonl").is_file():
             completed.append(cell)

@@ -57,7 +57,7 @@ def _evaluate_tasks(args, experiment, train_manifest, task_refs: list[TaskRef]) 
                 serve_config=train_manifest["serve_config"],
                 task_suite_name=suite,
                 num_trials=experiment.evaluation.num_trials,
-                max_steps=experiment.evaluation.max_steps,
+                max_steps=experiment.evaluation.rollout_horizon(suite),
                 replan_steps=experiment.evaluation.replan_steps,
                 port=args.port,
                 server_gpu=args.server_gpu,
@@ -87,26 +87,44 @@ def _target_rows(
     source_after = {ref: rates[ref] for ref in source_refs}
     macro_before = sum(source_before.values()) / len(source_before)
     macro_after = sum(source_after.values()) / len(source_after)
+    target_ref = TaskRef(train_manifest["target_suite"], train_manifest["target_task_id"])
+    adapted_target_success = rates[target_ref]
     common = {
-        "suite": train_manifest["suite"],
+        "source_split_id": train_manifest["source_split_id"],
+        "source_checkpoint": train_manifest["source_checkpoint"],
+        "target_suite": train_manifest["target_suite"],
         "split_id": experiment.split_id,
+        "suite": train_manifest["target_suite"],  # Legacy alias for historical analysis tools.
         "source_task_ids": experiment.source_task_ids_by_suite(),
         "source_tasks": [dataclasses.asdict(ref) for ref in source_refs],
         "target_task_id": train_manifest["target_task_id"],
         "method": train_manifest["method"],
-        "num_demos": train_manifest["requested_num_demos"],
-        # Defaults are only for pre-protocol manifests; new runs always record capped10epochs.
-        "budget_name": train_manifest.get("budget_name", "legacy_fixed500"),
-        "budget_mode": train_manifest.get("budget_mode", "legacy_fixed_steps"),
-        "num_selected_trajectories": train_manifest["num_selected_trajectories"],
-        "seed": train_manifest["seed"],
+        "requested_data_budget": train_manifest["requested_data_budget"],
+        "actual_num_demos": train_manifest["actual_num_demos"],
+        "total_available_demos": train_manifest["total_available_demos"],
+        "selected_trajectory_ids": train_manifest["selected_trajectory_ids"],
+        "subset_seed": train_manifest["subset_seed"],
+        "effective_epochs": train_manifest["effective_epochs"],
+        "num_training_examples": train_manifest["num_training_examples"],
+        "global_batch_size": train_manifest["global_batch_size"],
+        "calculated_optimizer_steps": train_manifest["calculated_optimizer_steps"],
+        "actual_optimizer_steps": train_manifest["actual_optimizer_steps"],
+        "samples_seen": train_manifest["samples_seen"],
+        "zero_shot_target_success": target_success_zero_shot,
+        "adapted_target_success": adapted_target_success,
+        "target_gain": adapted_target_success - target_success_zero_shot,
+        "source_success_before_macro": macro_before,
+        "source_success_after_macro": macro_after,
+        "source_forgetting_macro": macro_before - macro_after,
+        "source_retention_macro": macro_after / max(macro_before, epsilon),
+        # Compatibility aliases that do not relabel all_available as a nominal demo budget.
+        "num_selected_trajectories": train_manifest["actual_num_demos"],
+        "seed": train_manifest["subset_seed"],
         "num_transitions": train_manifest["num_transitions"],
         "num_training_windows": train_manifest["num_training_windows"],
-        "samples_seen": train_manifest["samples_seen"],
-        "optimizer_steps": train_manifest["optimizer_steps"],
-        "effective_epochs": train_manifest["effective_epochs"],
+        "optimizer_steps": train_manifest["actual_optimizer_steps"],
         "target_success_zero_shot": target_success_zero_shot,
-        "target_success_gain": None,
+        "target_success_gain": adapted_target_success - target_success_zero_shot,
     }
     rows = []
     for ref in source_refs:
@@ -118,6 +136,7 @@ def _target_rows(
                 "evaluated_task_suite": ref.suite,
                 "evaluated_task_id": ref.task_id,
                 "evaluated_task_role": "source",
+                "rollout_horizon": experiment.evaluation.rollout_horizon(ref.suite),
                 "success_rate": after,
                 "source_success_before": before,
                 "source_success_after": after,
@@ -126,13 +145,13 @@ def _target_rows(
                 "source_metric_scope": "task",
             }
         )
-    target_ref = TaskRef(train_manifest["suite"], train_manifest["target_task_id"])
     rows.append(
         {
             **common,
             "evaluated_task_suite": target_ref.suite,
             "evaluated_task_id": target_ref.task_id,
             "evaluated_task_role": "target",
+            "rollout_horizon": experiment.evaluation.rollout_horizon(target_ref.suite),
             "success_rate": rates[target_ref],
             "target_success_gain": rates[target_ref] - target_success_zero_shot,
             "source_success_before": macro_before,
@@ -166,6 +185,7 @@ def _write_target_zero_shot(experiment, train_manifest: dict, rates: dict[TaskRe
             "target_task_ids": experiment.target_task_ids_by_suite(),
             "target_tasks": [dataclasses.asdict(ref) for ref in experiment.target_task_refs()],
             "target_success_zero_shot": {ref.key: rates[ref] for ref in experiment.target_task_refs()},
+            "rollout_horizons": experiment.evaluation.rollout_horizons,
             "num_trials": experiment.evaluation.num_trials,
             "checkpoint_dir": train_manifest["checkpoint_dir"],
         },
@@ -212,6 +232,7 @@ def main() -> None:
             "target_task_ids": experiment.target_task_ids_by_suite(),
             "target_tasks": [dataclasses.asdict(ref) for ref in target_refs],
             "target_success_zero_shot": {ref.key: rates[ref] for ref in target_refs},
+            "rollout_horizons": experiment.evaluation.rollout_horizons,
             "num_trials": experiment.evaluation.num_trials,
             "checkpoint_dir": train_manifest["checkpoint_dir"],
         }
@@ -229,7 +250,7 @@ def main() -> None:
                 f"Target zero-shot evaluation is required; run scripts/job_low_data_zero_shot.sh: {zero_shot_path}"
             )
         zero_shot = json.loads(zero_shot_path.read_text())
-        target_ref = TaskRef(train_manifest["suite"], train_manifest["target_task_id"])
+        target_ref = TaskRef(train_manifest["target_suite"], train_manifest["target_task_id"])
         target_success_zero_shot = _read_task_rates(zero_shot, "target_success_zero_shot", (target_ref,))[target_ref]
         rates = _evaluate_tasks(args, experiment, train_manifest, [target_ref, *experiment.source_task_refs()])
         rows = _target_rows(
