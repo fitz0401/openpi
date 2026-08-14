@@ -17,8 +17,9 @@ immutable Stage-A source checkpoint
 
 Every Stage-B run reloads the exact same Stage-A checkpoint. Target tasks are never trained
 jointly, no adapted checkpoint is passed to another target, and source demonstrations are
-unavailable to the Stage-B dataloader. Both LoRA and Full FT are supported. Guidance and replay
-are outside this protocol.
+unavailable to the Stage-B dataloader. The implementation retains modular LoRA and Full-FT
+support, but the resource-constrained formal paper grid runs LoRA only. Guidance and replay are
+outside this protocol.
 
 The primary data budgets are complete trajectories:
 
@@ -27,10 +28,9 @@ D1 ⊂ D5 ⊂ D10 ⊂ D25
 ```
 
 For each `(target, subset_seed)`, the code creates one deterministic trajectory ordering and uses
-prefixes. LoRA uses `1/5/10/25/all_available`; Full FT retains sparse anchors
-`1/10/all_available`. The shared `1`, `10`, and `all_available` subsets are identical across LoRA
-and Full FT, so method comparisons are paired. `all_available` records its actual trajectory count
-and is never called "50 demos".
+prefixes. The formal grid uses LoRA at `1/5/10/25/all_available`. The implementation retains
+Full-FT anchors at `1/10/all_available` for optional future use, but does not submit them in the
+paper grid. `all_available` records its actual trajectory count and is never called "50 demos".
 
 All adaptation conditions use the development-validated `effective_epochs=10.0`. There is no
 minimum-step floor and no normal optimizer-step cap. The scientific optimizer budget is:
@@ -69,16 +69,54 @@ The task split is unchanged:
 - Goal source `[4, 2, 9, 7, 6, 8]`, target `[5, 1, 3, 0]`
 - LIBERO-10 source `[]`, target `[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]`
 
-This is one 18-source checkpoint and 22 independent targets. No Split B is defined. With two
-LoRA's five data budgets, Full FT's three anchors, and seed 0, a complete future Stage-B grid is
-`22 × (5 + 3) × 1 = 176` runs.
+This is one 18-source checkpoint and 22 independent targets. No Split B is defined. The formal
+paper grid uses target/subset seeds `[0, 1, 2]` for the 12 controlled Spatial/Object/Goal targets
+and seed `[0]` for the 10 LIBERO-10 targets. `all_available` also uses seed 0 only for every suite.
+LoRA uses all five data budgets and Full FT is not submitted. The complete Stage-B grid is
+`(12 × 4 × 3) + (12 × 1) + (10 × 5 × 1) = 206` independent runs.
+Stage A is trained once with seed 0 and is immutable across every Stage-B cell. Every evaluation
+uses 25 rollout trials.
 
-The final protocol writes to `checkpoints/low_data_final` and `results/low_data_final`, separated
+For each `(target, subset_seed)`, compatibility `C1` is defined on the exact trajectory selected
+by `D1`. Its episode ID is stored as `c1_trajectory_id` in every target train manifest and tidy
+result. All `D5/D10/D25` runs for that `(target, seed)` must begin with that same D1 trajectory;
+the final workflow audit treats any mismatch as a protocol violation.
+
+After the all-source V3 probe evaluation is available, export C1 by an exact episode-ID join:
+
+```bash
+uv run scripts/export_seed_matched_progress_c1.py \
+  --experiment-config examples/low_data/configs/libero_main_18source_22target.json \
+  --probe-per-demo-csv results/progress_probe/progress_regression_lite_v3/all_source/evaluation/per_demo.csv
+```
+
+This produces one C1 per `(target, subset_seed)` and fails on a missing or duplicate probe row.
+
+The final protocol writes to `checkpoints/paper_split_a` and `results/paper_split_a`, separated
 from historical outputs. A future complete dependency chain can be submitted with:
 
 ```bash
-MAX_CONCURRENT=2 scripts/submit_low_data_main.sh
+MAX_CONCURRENT=4 scripts/submit_low_data_main.sh
 ```
+
+If Stage A already completed under an older evaluation count, reuse its immutable checkpoint and
+submit only the refreshed 25-trial baseline evaluation, Stage B, and finalizer with:
+
+```bash
+MAX_CONCURRENT=4 scripts/submit_low_data_stage_b.sh \
+  examples/low_data/configs/libero_main_18source_22target.json
+```
+
+The Stage-B-only submitter never retrains Stage A. It verifies the source checkpoint, refreshes
+source/zero-shot evaluation when its recorded trial count is not 25, and makes the Stage-B array
+depend on that refresh. This keeps zero-shot gain and source forgetting on the same 25-trial
+protocol. Stage-B cells and the evaluation-only baseline refresh request 24 hours rather than the
+older 48-hour limit, improving backfill opportunities after halving the rollout count.
+
+The finalizer writes the uniquely named archive
+`results/paper_split_a/paper_split_a__libero_main_18s22t_v0.tar.gz`; extract it into a dedicated
+local paper-result directory because the audited source split ID intentionally remains
+`libero_main_18s22t_v0`.
 
 One explicit Stage-B cell uses a data-budget label, not `NUM_DEMOS`:
 
@@ -97,6 +135,7 @@ source_split_id, source_checkpoint
 target_suite, target_task_id, method
 requested_data_budget, actual_num_demos, total_available_demos
 selected_trajectory_ids, subset_seed
+c1_trajectory_id, c1_definition
 effective_epochs, num_training_examples, global_batch_size
 calculated_optimizer_steps, actual_optimizer_steps, samples_seen
 rollout_horizon

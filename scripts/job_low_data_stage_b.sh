@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -l nodes=1:ppn=12:gpus=1
-#PBS -l walltime=48:00:00
+#PBS -l walltime=24:00:00
 #PBS -A starting_2026_047
 
 # Train and evaluate ONE independent (target, method, data_budget, seed) adaptation run.
@@ -57,8 +57,28 @@ print(target_result_dir(config, sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.
 PY
 )
 PERSISTENT_MANIFEST="${RESULT_DIR}/train_manifest.json"
-if [ -s "${RESULT_DIR}/tidy_results.jsonl" ]; then
-  echo "Stage-B result already complete; skipping ${RESULT_DIR}"
+RESULT_COMPLETE=$(uv run python - "${EXPERIMENT_CONFIG}" "${RESULT_DIR}" <<'PY'
+import json
+import pathlib
+import sys
+
+from openpi.training.low_data.experiment import load_experiment_config
+
+config = load_experiment_config(sys.argv[1])
+result_dir = pathlib.Path(sys.argv[2])
+try:
+    matches = (
+        (result_dir / "tidy_results.jsonl").stat().st_size > 0
+        and json.loads((result_dir / "eval_results.json").read_text()).get("num_trials")
+        == config.evaluation.num_trials
+    )
+except (FileNotFoundError, json.JSONDecodeError):
+    matches = False
+print(int(matches))
+PY
+)
+if [ "${RESULT_COMPLETE}" = 1 ]; then
+  echo "Stage-B result already matches the configured trial count; skipping ${RESULT_DIR}"
   exit 0
 fi
 

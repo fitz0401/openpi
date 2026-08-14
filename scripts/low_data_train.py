@@ -151,8 +151,9 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
     method_data_budgets = adaptation.data_budgets_for_method(args.method)
     if args.data_budget not in method_data_budgets:
         raise ValueError(f"data_budget for {args.method} must be one of {method_data_budgets}")
-    if args.seed not in adaptation.seeds:
-        raise ValueError(f"seed must be one of {adaptation.seeds}")
+    allowed_seeds = adaptation.seeds_for(args.target_suite, args.data_budget)
+    if args.seed not in allowed_seeds:
+        raise ValueError(f"seed for {args.target_suite} must be one of {allowed_seeds}")
 
     base = _config.get_config(METHOD_CONFIGS[args.method])
     task_string = resolve_task_refs(meta, experiment, (target_ref,))[0]
@@ -165,6 +166,9 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         data_budgets=adaptation.data_budgets,
     )
     selected = nested[args.data_budget]
+    c1_trajectory_id = nested["1"][0]
+    if not selected or selected[0] != c1_trajectory_id:
+        raise AssertionError("Protocol violation: every target subset must begin with its seed-matched D1 trajectory.")
     num_training_examples = sum(int(meta.episodes[index]["length"]) for index in selected)
     calculated_optimizer_steps = adaptation.calculate_optimizer_steps(
         num_training_examples=num_training_examples,
@@ -237,6 +241,8 @@ def _build_target(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         "subset_seed": args.seed,
         "source_checkpoint": source_checkpoint,
         "selected_trajectory_ids": selected,
+        "c1_trajectory_id": c1_trajectory_id,
+        "c1_definition": "progress_r2_on_seed_matched_D1",
         "deterministic_trajectory_order": trajectory_order,
         "nested_trajectory_subsets": {str(budget): indices for budget, indices in nested.items()},
         "effective_epochs": adaptation.effective_epochs,

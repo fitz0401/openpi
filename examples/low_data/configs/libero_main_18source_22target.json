@@ -25,20 +25,25 @@
     }
   ],
   "base_checkpoint": "gs://openpi-assets/checkpoints/pi05_base",
-  "checkpoint_root": "./checkpoints/low_data_final",
-  "results_root": "./results/low_data_final",
+  "checkpoint_root": "./checkpoints/paper_split_a",
+  "results_root": "./results/paper_split_a",
   "source": {
     "optimizer_steps": 4500,
     "batch_size": 32
   },
   "adaptation": {
     "data_budgets": ["1", "5", "10", "25", "all_available"],
-    "methods": ["lora", "full"],
+    "methods": ["lora"],
     "method_data_budgets": {
-      "lora": ["1", "5", "10", "25", "all_available"],
-      "full": ["1", "10", "all_available"]
+      "lora": ["1", "5", "10", "25", "all_available"]
     },
-    "seeds": [0],
+    "seeds": [0, 1, 2],
+    "suite_seed_overrides": {
+      "libero_10": [0]
+    },
+    "data_budget_seed_overrides": {
+      "all_available": [0]
+    },
     "effective_epochs": 10.0,
     "per_device_batch_size": 32,
     "world_size": 1,
@@ -46,7 +51,7 @@
     "hard_max_steps": null
   },
   "evaluation": {
-    "num_trials": 20,
+    "num_trials": 25,
     "replan_steps": 5,
     "rollout_horizons": {
       "libero_spatial": 220,

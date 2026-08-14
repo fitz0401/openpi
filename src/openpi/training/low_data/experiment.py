@@ -86,6 +86,8 @@ class AdaptationRecipe:
     methods: tuple[str, ...]
     method_data_budgets: dict[str, tuple[str, ...]]
     seeds: tuple[int, ...]
+    suite_seed_overrides: dict[str, tuple[int, ...]]
+    data_budget_seed_overrides: dict[str, tuple[int, ...]]
     effective_epochs: float
     per_device_batch_size: int = 32
     world_size: int = 1
@@ -95,16 +97,29 @@ class AdaptationRecipe:
     def validate(self) -> None:
         if self.data_budgets != FINAL_DATA_BUDGETS:
             raise ValueError(f"Final protocol requires data_budgets={FINAL_DATA_BUDGETS}.")
-        if set(self.methods) != {"full", "lora"} or len(self.methods) != 2:
-            raise ValueError("Final protocol requires both and only 'full' and 'lora'.")
-        expected_method_budgets = {
+        if not self.methods or len(self.methods) != len(set(self.methods)) or not set(self.methods) <= {"full", "lora"}:
+            raise ValueError("Adaptation methods must be a non-empty unique subset of {'lora', 'full'}.")
+        supported_method_budgets = {
             "lora": FINAL_DATA_BUDGETS,
             "full": ("1", "10", ALL_AVAILABLE_BUDGET),
         }
+        expected_method_budgets = {method: supported_method_budgets[method] for method in self.methods}
         if self.method_data_budgets != expected_method_budgets:
-            raise ValueError(f"Final protocol requires method_data_budgets={expected_method_budgets}.")
+            raise ValueError(f"Selected methods require method_data_budgets={expected_method_budgets}.")
         if not self.seeds or len(self.seeds) != len(set(self.seeds)):
             raise ValueError("Adaptation seeds must be non-empty and unique.")
+        for suite, seeds in self.suite_seed_overrides.items():
+            if not seeds or len(seeds) != len(set(seeds)):
+                raise ValueError(f"Seed override for {suite} must be non-empty and unique.")
+            if not set(seeds) <= set(self.seeds):
+                raise ValueError(f"Seed override for {suite} must be a subset of global seeds={self.seeds}.")
+        for data_budget, seeds in self.data_budget_seed_overrides.items():
+            if data_budget not in self.data_budgets:
+                raise ValueError(f"Seed override references unknown data budget {data_budget!r}.")
+            if not seeds or len(seeds) != len(set(seeds)):
+                raise ValueError(f"Seed override for {data_budget} must be non-empty and unique.")
+            if not set(seeds) <= set(self.seeds):
+                raise ValueError(f"Seed override for {data_budget} must be a subset of global seeds={self.seeds}.")
         if self.effective_epochs <= 0:
             raise ValueError("adaptation.effective_epochs must be positive.")
         if self.per_device_batch_size <= 0 or self.world_size <= 0:
@@ -120,6 +135,14 @@ class AdaptationRecipe:
 
     def data_budgets_for_method(self, method: str) -> tuple[str, ...]:
         return self.method_data_budgets[method]
+
+    def seeds_for(self, suite: str, data_budget: str) -> tuple[int, ...]:
+        suite_seeds = self.suite_seed_overrides.get(suite, self.seeds)
+        budget_seeds = self.data_budget_seed_overrides.get(data_budget, self.seeds)
+        selected = tuple(seed for seed in self.seeds if seed in suite_seeds and seed in budget_seeds)
+        if not selected:
+            raise ValueError(f"Seed overrides leave no valid seed for suite={suite}, data_budget={data_budget}.")
+        return selected
 
     def calculate_optimizer_steps(self, *, num_training_examples: int) -> int:
         if num_training_examples <= 0:
@@ -217,6 +240,9 @@ class PilotExperimentConfig:
             raise ValueError("Source and target task sets must both be non-empty.")
         if self.source.optimizer_steps <= 0:
             raise ValueError("Source optimizer-step budget must be positive.")
+        unknown_seed_override_suites = set(self.adaptation.suite_seed_overrides) - set(suite_names)
+        if unknown_seed_override_suites:
+            raise ValueError(f"Seed overrides reference unknown suites: {sorted(unknown_seed_override_suites)}")
         self.adaptation.validate()
         self.evaluation.validate()
 
@@ -301,6 +327,14 @@ def load_experiment_config(path: str | pathlib.Path) -> PilotExperimentConfig:
                 for method, budgets in raw["adaptation"]["method_data_budgets"].items()
             },
             seeds=tuple(int(x) for x in raw["adaptation"]["seeds"]),
+            suite_seed_overrides={
+                str(suite): tuple(int(x) for x in seeds)
+                for suite, seeds in raw["adaptation"].get("suite_seed_overrides", {}).items()
+            },
+            data_budget_seed_overrides={
+                str(data_budget): tuple(int(x) for x in seeds)
+                for data_budget, seeds in raw["adaptation"].get("data_budget_seed_overrides", {}).items()
+            },
             effective_epochs=float(raw["adaptation"]["effective_epochs"]),
             per_device_batch_size=int(raw["adaptation"].get("per_device_batch_size", 32)),
             world_size=int(raw["adaptation"].get("world_size", 1)),
@@ -336,7 +370,7 @@ def target_grid(config: PilotExperimentConfig) -> list[tuple[str, int, str, str,
         for target in config.target_task_refs()
         for method in config.adaptation.methods
         for data_budget in config.adaptation.data_budgets_for_method(method)
-        for seed in config.adaptation.seeds
+        for seed in config.adaptation.seeds_for(target.suite, data_budget)
     ]
 
 

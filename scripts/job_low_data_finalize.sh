@@ -20,6 +20,8 @@ config = load_experiment_config(sys.argv[1])
 print(pathlib.Path(config.results_root) / config.split_id, config.split_id)
 PY
 )"
+RESULTS_NAMESPACE=$(basename "$(dirname "${RESULTS_DIR}")")
+ARCHIVE_PATH="$(dirname "${RESULTS_DIR}")/${RESULTS_NAMESPACE}__${SPLIT_ID}.tar.gz"
 
 echo "===== LOW-DATA FINALIZE ====="
 echo "EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG} RESULTS_DIR=${RESULTS_DIR}"
@@ -30,8 +32,8 @@ if find "${RESULTS_DIR}/runs" -name tidy_results.jsonl -print -quit 2>/dev/null 
   uv run scripts/aggregate_low_data_results.py --results-dir "${RESULTS_DIR}"
   uv run scripts/plot_low_data_main_results.py --results-dir "${RESULTS_DIR}" || \
     echo "WARNING: plotting failed; tidy tables and workflow audit are still available." >&2
-  tar -czf "${RESULTS_DIR}.tar.gz" -C "$(dirname "${RESULTS_DIR}")" "${SPLIT_ID}"
-  echo "Download-ready archive: ${RESULTS_DIR}.tar.gz"
+  tar -czf "${ARCHIVE_PATH}" -C "$(dirname "${RESULTS_DIR}")" "${SPLIT_ID}"
+  echo "Download-ready archive: ${ARCHIVE_PATH}"
 else
   echo "WARNING: no completed Stage-B result was found; see ${RESULTS_DIR}/workflow_status.json" >&2
 fi

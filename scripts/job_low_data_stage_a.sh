@@ -13,6 +13,7 @@ module load cluster/dodrio/gpu_rome_a100_80_rhel9
 module load CUDA
 
 EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG:?Set EXPERIMENT_CONFIG to a low-data JSON config}
+SOURCE_EVAL_ONLY=${SOURCE_EVAL_ONLY:-0}
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 JOB_TOKEN=${PBS_JOBID:-$$}
 JOB_TOKEN=${JOB_TOKEN//[!a-zA-Z0-9_.-]/_}
@@ -29,8 +30,25 @@ print(pathlib.Path(config.results_root) / config.split_id / "source")
 PY
 )
 PERSISTENT_MANIFEST="${SOURCE_RESULT_DIR}/train_manifest.json"
-if [ -s "${SOURCE_RESULT_DIR}/source_eval.json" ] && [ -s "${SOURCE_RESULT_DIR}/target_zero_shot_eval.json" ]; then
-  echo "Stage A and zero-shot evaluation already complete; skipping ${SOURCE_RESULT_DIR}"
+EVAL_COMPLETE=$(uv run python - "${EXPERIMENT_CONFIG}" "${SOURCE_RESULT_DIR}" <<'PY'
+import json
+import pathlib
+import sys
+
+from openpi.training.low_data.experiment import load_experiment_config
+
+config = load_experiment_config(sys.argv[1])
+result_dir = pathlib.Path(sys.argv[2])
+paths = (result_dir / "source_eval.json", result_dir / "target_zero_shot_eval.json")
+try:
+    matches = all(json.loads(path.read_text()).get("num_trials") == config.evaluation.num_trials for path in paths)
+except (FileNotFoundError, json.JSONDecodeError):
+    matches = False
+print(int(matches))
+PY
+)
+if [ "${EVAL_COMPLETE}" = 1 ]; then
+  echo "Stage A and zero-shot evaluation already match the configured trial count; skipping ${SOURCE_RESULT_DIR}"
   exit 0
 fi
 PORT_SEED="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}"
@@ -85,6 +103,10 @@ if [ "${REUSE_CHECKPOINT}" = 1 ]; then
   echo "Reusing trained Stage-A checkpoint from ${PERSISTENT_MANIFEST}"
   DESCRIPTOR="${PERSISTENT_MANIFEST}"
 else
+  if [ "${SOURCE_EVAL_ONLY}" = 1 ]; then
+    echo "SOURCE_EVAL_ONLY=1 but no reusable Stage-A checkpoint exists at ${PERSISTENT_MANIFEST}" >&2
+    exit 2
+  fi
   source .venv/bin/activate
   uv run scripts/low_data_train.py \
     --experiment-config "${EXPERIMENT_CONFIG}" \

@@ -1,0 +1,13 @@
+{
+  "schema_version": 3,
+  "experiment_name": "progress_regression_lite_v3_all_source",
+  "probe_source_subset": "all_source",
+  "source_suites": ["libero_spatial", "libero_object", "libero_goal"],
+  "target_suites": ["libero_spatial", "libero_object", "libero_goal", "libero_10"],
+  "split_config": "../../low_data/configs/libero_main_18source_22target.json",
+  "output_dir": "../../../results/progress_probe/progress_regression_lite_v3/all_source",
+  "dataset": {"repo_id": "physical-intelligence/libero", "root": null, "image_key": "image", "successful_expert_demos_only": true},
+  "model": {"clip_model": "openai/clip-vit-base-patch32"},
+  "training": {"seed": 0, "optimizer_steps": 3000, "batch_size": 32, "learning_rate": 0.0003, "weight_decay": 0.0001, "validation_demos_per_task": 1, "validation_frames_per_task": 128, "validate_every": 100, "log_every": 10, "max_grad_norm": 1.0, "max_source_tasks": null, "max_train_demos_per_task": null},
+  "evaluation": {"batch_size": 128, "min_separation_fraction": 0.1, "max_eval_demos": null, "max_target_tasks": null, "wrong_language": true}
+}

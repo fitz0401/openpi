@@ -33,6 +33,8 @@ def _adaptation(**overrides):
             "full": ("1", "10", ALL_AVAILABLE_BUDGET),
         },
         "seeds": (0,),
+        "suite_seed_overrides": {},
+        "data_budget_seed_overrides": {},
         "effective_epochs": 10.0,
         "per_device_batch_size": 8,
         "world_size": 2,
@@ -91,12 +93,29 @@ def test_final_split_a_config_is_frozen_and_paired():
     assert config.adaptation.effective_epochs == 10.0
     assert config.adaptation.data_budgets == FINAL_DATA_BUDGETS
     assert config.adaptation.data_budgets_for_method("lora") == FINAL_DATA_BUDGETS
-    assert config.adaptation.data_budgets_for_method("full") == ("1", "10", ALL_AVAILABLE_BUDGET)
+    assert config.adaptation.methods == ("lora",)
+    assert config.adaptation.suite_seed_overrides == {"libero_10": (0,)}
+    assert config.adaptation.data_budget_seed_overrides == {ALL_AVAILABLE_BUDGET: (0,)}
     assert config.adaptation.hard_max_steps is None
     assert config.evaluation.rollout_horizons == OFFICIAL_ROLLOUT_HORIZONS
-    assert len(target_grid(config)) == 176
+    assert config.adaptation.seeds == (0, 1, 2)
+    assert config.evaluation.num_trials == 25
+    assert len(target_grid(config)) == 206
     assert target_grid(config)[0] == ("libero_spatial", 5, "lora", "1", 0)
-    assert target_grid(config)[-1] == ("libero_10", 9, "full", ALL_AVAILABLE_BUDGET, 0)
+    assert target_grid(config)[-1] == ("libero_10", 9, "lora", ALL_AVAILABLE_BUDGET, 0)
+
+
+def test_suite_seed_override_only_changes_requested_suite():
+    config = load_experiment_config(_REPO_ROOT / "examples/low_data/configs/libero_main_18source_22target.json")
+    grid = target_grid(config)
+    controlled_seeds = {
+        seed for suite, _, _, budget, seed in grid if suite != "libero_10" and budget != ALL_AVAILABLE_BUDGET
+    }
+    libero_10_seeds = {seed for suite, _, _, _, seed in grid if suite == "libero_10"}
+    all_available_seeds = {seed for _, _, _, budget, seed in grid if budget == ALL_AVAILABLE_BUDGET}
+    assert controlled_seeds == {0, 1, 2}
+    assert libero_10_seeds == {0}
+    assert all_available_seeds == {0}
 
 
 def test_nonstandard_rollout_horizon_is_rejected_without_debug_override():

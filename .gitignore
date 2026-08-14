@@ -4,6 +4,12 @@ checkpoints/
 data/
 wandb/
 experiments/
+results/
+
+# Scheduler output and packaged experiment artifacts.
+*.o[0-9]*
+*.e[0-9]*
+*.tar.gz
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -19,6 +19,8 @@ def main() -> None:
     result_root = pathlib.Path(config.results_root) / config.split_id
     missing = []
     completed = []
+    protocol_violations = []
+    c1_by_target_seed: dict[tuple[str, int, int], int] = {}
     for suite, task_id, method, data_budget, seed in target_grid(config):
         run_dir = target_result_dir(config, suite, task_id, method, data_budget, seed)
         cell = {
@@ -28,25 +30,87 @@ def main() -> None:
             "requested_data_budget": data_budget,
             "subset_seed": seed,
         }
-        if (run_dir / "tidy_results.jsonl").is_file():
-            completed.append(cell)
-        else:
+        if not (run_dir / "tidy_results.jsonl").is_file():
             missing.append(cell)
+            continue
+        manifest_path = run_dir / "train_manifest.json"
+        eval_path = run_dir / "eval_results.json"
+        errors = []
+        if not manifest_path.is_file():
+            errors.append(f"missing {manifest_path}")
+        else:
+            manifest = json.loads(manifest_path.read_text())
+            nested = manifest.get("nested_trajectory_subsets", {})
+            d1 = nested.get("1", [])
+            selected = manifest.get("selected_trajectory_ids", [])
+            c1_trajectory_id = manifest.get("c1_trajectory_id")
+            if len(d1) != 1:
+                errors.append(f"nested D1 must contain exactly one trajectory, got {d1}")
+            elif c1_trajectory_id != d1[0]:
+                errors.append(f"c1_trajectory_id={c1_trajectory_id} does not match D1={d1[0]}")
+            if selected != nested.get(data_budget):
+                errors.append(f"selected trajectories do not match nested subset {data_budget}")
+            if not selected or selected[0] != c1_trajectory_id:
+                errors.append("selected subset does not begin with c1_trajectory_id")
+            for field, expected in (
+                ("target_suite", suite),
+                ("target_task_id", task_id),
+                ("method", method),
+                ("requested_data_budget", data_budget),
+                ("subset_seed", seed),
+            ):
+                if manifest.get(field) != expected:
+                    errors.append(f"manifest {field}={manifest.get(field)!r}, expected {expected!r}")
+            if len(d1) == 1:
+                key = (suite, task_id, seed)
+                previous = c1_by_target_seed.setdefault(key, d1[0])
+                if previous != d1[0]:
+                    errors.append(f"D1 changed across budgets: expected {previous}, got {d1[0]}")
+        if not eval_path.is_file():
+            errors.append(f"missing {eval_path}")
+        else:
+            eval_payload = json.loads(eval_path.read_text())
+            if eval_payload.get("num_trials") != config.evaluation.num_trials:
+                errors.append(
+                    f"evaluation num_trials={eval_payload.get('num_trials')!r}, "
+                    f"expected {config.evaluation.num_trials}"
+                )
+        if errors:
+            protocol_violations.append({**cell, "errors": errors})
+        else:
+            completed.append(cell)
     source_dir = result_root / "source"
+    baseline_paths = (source_dir / "source_eval.json", source_dir / "target_zero_shot_eval.json")
+    baseline_num_trials = {}
+    for path in baseline_paths:
+        try:
+            baseline_num_trials[path.name] = json.loads(path.read_text()).get("num_trials")
+        except (FileNotFoundError, json.JSONDecodeError):
+            baseline_num_trials[path.name] = None
+    baseline_protocol_valid = all(value == config.evaluation.num_trials for value in baseline_num_trials.values())
     payload = {
         "split_id": config.split_id,
         "source_train_complete": (source_dir / "train_manifest.json").is_file(),
         "source_eval_complete": (source_dir / "source_eval.json").is_file(),
         "zero_shot_complete": (source_dir / "target_zero_shot_eval.json").is_file(),
-        "expected_stage_b_runs": len(completed) + len(missing),
+        "expected_num_trials": config.evaluation.num_trials,
+        "baseline_num_trials": baseline_num_trials,
+        "baseline_protocol_valid": baseline_protocol_valid,
+        "expected_stage_b_runs": len(completed) + len(missing) + len(protocol_violations),
         "completed_stage_b_runs": len(completed),
         "missing_stage_b_runs": missing,
-        "complete": not missing,
+        "c1_binding": "progress R2 must use the exact c1_trajectory_id / D1 episode for each target and seed",
+        "verified_c1_bindings": len(c1_by_target_seed),
+        "protocol_violations": protocol_violations,
+        "complete": baseline_protocol_valid and not missing and not protocol_violations,
     }
     result_root.mkdir(parents=True, exist_ok=True)
     status_path = result_root / "workflow_status.json"
     status_path.write_text(json.dumps(payload, indent=2) + "\n")
-    print(f"Stage B: {len(completed)}/{len(completed) + len(missing)} complete; status written to {status_path}")
+    print(
+        f"Stage B: {len(completed)}/{len(completed) + len(missing) + len(protocol_violations)} valid; "
+        f"protocol violations={len(protocol_violations)}; status written to {status_path}"
+    )
 
 
 if __name__ == "__main__":
