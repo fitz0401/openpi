@@ -144,17 +144,20 @@ def test_suite_seed_override_only_changes_requested_suite():
     assert all_available_seeds == {0}
 
 
-def test_mixed_abc_split_keeps_one_joint_18_source_checkpoint():
-    config = load_experiment_config(_REPO_ROOT / "examples/low_data/configs/libero_split_abc_18source_22target.json")
-    assert config.source_task_ids_by_suite() == {
-        "libero_spatial": [4, 2, 9, 7, 6, 8],
-        "libero_object": [1, 3, 5, 7, 8, 9],
-        "libero_goal": [0, 2, 3, 4, 5, 6],
-    }
+@pytest.mark.parametrize(
+    ("filename", "source_ids", "target_ids"),
+    [
+        ("libero_main_18source_22target.json", [4, 2, 9, 7, 6, 8], [5, 1, 3, 0]),
+        ("libero_split_b_18source_22target.json", [1, 3, 5, 7, 8, 9], [0, 2, 4, 6]),
+        ("libero_split_c_18source_22target.json", [0, 2, 3, 4, 5, 6], [1, 7, 8, 9]),
+    ],
+)
+def test_formal_splits_keep_one_joint_18_source_checkpoint(filename, source_ids, target_ids):
+    config = load_experiment_config(_REPO_ROOT / "examples/low_data/configs" / filename)
+    suites = ("libero_spatial", "libero_object", "libero_goal")
+    assert config.source_task_ids_by_suite() == dict.fromkeys(suites, source_ids)
     assert config.target_task_ids_by_suite() == {
-        "libero_spatial": [5, 1, 3, 0],
-        "libero_object": [0, 2, 4, 6],
-        "libero_goal": [1, 7, 8, 9],
+        **dict.fromkeys(suites, target_ids),
         "libero_10": list(range(10)),
     }
     assert len(config.source_task_refs()) == 18

@@ -28,6 +28,8 @@ mkdir -p "${OPENPI_CACHE_ROOT}/huggingface" "${OPENPI_CACHE_ROOT}/openpi" .clust
 export OPENPI_REPO_ROOT="${REPO_ROOT}"
 export OPENPI_CACHE_ROOT
 export HF_HOME=${HF_HOME:-${OPENPI_CACHE_ROOT}/huggingface}
+export HF_TOKEN_PATH=${HF_TOKEN_PATH:-${HOME}/.cache/huggingface/token}
+export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-0}
 export OPENPI_DATA_HOME=${OPENPI_DATA_HOME:-${OPENPI_CACHE_ROOT}/openpi}
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}}
@@ -63,6 +65,11 @@ PY
 fi
 
 if [ "${PREFETCH_DATASET}" = 1 ]; then
+  if [ "${REQUIRE_HF_AUTH:-0}" = 1 ] && [ -z "${HF_TOKEN:-}" ] && [ ! -s "${HF_TOKEN_PATH}" ]; then
+    echo "Hugging Face authentication is required before dataset prefetch." >&2
+    echo "Set HF_HOME/HF_TOKEN_PATH, then run: uv run huggingface-cli login" >&2
+    exit 2
+  fi
   echo "===== LIBERO LEROBOT DATASET ====="
   uv run python - <<'PY'
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -79,6 +86,8 @@ ENV_FILE=${REPO_ROOT}/.cluster/low_data.env
   printf 'export OPENPI_REPO_ROOT=%q\n' "${REPO_ROOT}"
   printf 'export OPENPI_CACHE_ROOT=%q\n' "${OPENPI_CACHE_ROOT}"
   printf 'export HF_HOME=%q\n' "${HF_HOME}"
+  printf 'export HF_TOKEN_PATH=%q\n' "${HF_TOKEN_PATH}"
+  printf 'export HF_HUB_DISABLE_XET=%q\n' "${HF_HUB_DISABLE_XET}"
   printf 'export OPENPI_DATA_HOME=%q\n' "${OPENPI_DATA_HOME}"
   printf 'export LIBERO_VENV=%q\n' "${LIBERO_VENV}"
   if [ -n "${SLURM_ACCOUNT:-}" ]; then printf 'export SLURM_ACCOUNT=%q\n' "${SLURM_ACCOUNT}"; fi

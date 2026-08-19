@@ -12,5 +12,8 @@ export SLURM_GPU_GRES=${SLURM_GPU_GRES:-gpu:nvidia_h200:1}
 export SLURM_CPUS_PER_GPU=${SLURM_CPUS_PER_GPU:-12}
 export SLURM_GPU_MEMORY=${SLURM_GPU_MEMORY:-125G}
 export OPENPI_GPU_MODULES=${OPENPI_GPU_MODULES:-CUDA/12.8.0}
+export HF_TOKEN_PATH=${HF_TOKEN_PATH:-${HOME}/.cache/huggingface/token}
+export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}
+export REQUIRE_HF_AUTH=${REQUIRE_HF_AUTH:-1}
 
 exec "${OPENPI_REPO_ROOT}/scripts/bootstrap_low_data_cluster.sh"

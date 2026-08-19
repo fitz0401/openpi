@@ -54,12 +54,13 @@ Every formal config jointly mixes six Spatial, six Object, and six Goal source t
 18-source Stage-A checkpoint. Each suite's other four tasks are held out, and all ten LIBERO-10
 tasks are additional targets. Source and target IDs are always disjoint.
 
-| Config | Spatial source → target | Object source → target | Goal source → target |
-|---|---|---|---|
-| [`libero_main_18source_22target.json`](examples/low_data/configs/libero_main_18source_22target.json) | A `[4,2,9,7,6,8]` → `[5,1,3,0]` | A `[4,2,9,7,6,8]` → `[5,1,3,0]` | A `[4,2,9,7,6,8]` → `[5,1,3,0]` |
-| [`libero_split_abc_18source_22target.json`](examples/low_data/configs/libero_split_abc_18source_22target.json) | A `[4,2,9,7,6,8]` → `[5,1,3,0]` | B `[1,3,5,7,8,9]` → `[0,2,4,6]` | C `[0,2,3,4,5,6]` → `[1,7,8,9]` |
+| Config | Spatial/Object/Goal source | Spatial/Object/Goal target |
+|---|---|---|
+| Split A: [`libero_main_18source_22target.json`](examples/low_data/configs/libero_main_18source_22target.json) | `[4,2,9,7,6,8]` | `[5,1,3,0]` |
+| Split B: [`libero_split_b_18source_22target.json`](examples/low_data/configs/libero_split_b_18source_22target.json) | `[1,3,5,7,8,9]` | `[0,2,4,6]` |
+| Split C: [`libero_split_c_18source_22target.json`](examples/low_data/configs/libero_split_c_18source_22target.json) | `[0,2,3,4,5,6]` | `[1,7,8,9]` |
 
-Both configs use 4,500 Stage-A optimizer steps and produce one immutable 18-source checkpoint.
+All three configs use 4,500 Stage-A optimizer steps and produce one immutable 18-source checkpoint.
 Changing experiments requires selecting a different config; orchestration derives the task
 manifest, 206-cell grid, output namespace, and evaluation workload from that file.
 
@@ -79,13 +80,20 @@ cd /sofia/projects/2026_start_025
 git clone https://github.com/fitz0401/openpi.git openpi
 cd openpi
 
+export HF_HOME=/sofia/projects/2026_start_025/cache/openpi_low_data_cache/huggingface
+export HF_TOKEN_PATH="$HOME/.cache/huggingface/token"
+uv run huggingface-cli login
+
 scripts/bootstrap_low_data_sofia.sh
 source .cluster/low_data.env
 ```
 
 The bootstrap creates both Python environments, initializes submodules, validates normalization
 statistics, and prefetches the π₀.₅ base checkpoint and complete LIBERO dataset into the shared
-project cache.
+project cache. Sofia requires an authenticated Hugging Face account during dataset prefetch to
+avoid anonymous shared-IP rate limits. The token remains in the user's home directory rather than
+the group-readable project cache. `HF_HUB_DISABLE_XET=1` is enabled by the Sofia profile as a
+conservative fallback for Xet token-endpoint throttling.
 
 Submit a complete Stage-A → Stage-B → finalizer chain by choosing one config:
 
@@ -93,10 +101,10 @@ Submit a complete Stage-A → Stage-B → finalizer chain by choosing one config
 source .cluster/low_data.env
 
 MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh \
-  examples/low_data/configs/libero_split_abc_18source_22target.json
+  examples/low_data/configs/libero_split_b_18source_22target.json
 ```
 
-Replace only the config path to run the original AAA split. Defaults are eight concurrent Stage-B
+Replace only the config path to run Split A or C. Defaults are eight concurrent Stage-B
 cells, 48 hours for Stage A, 12 hours per Stage-B cell, and two hours for finalization. Logs are
 written to `job_record/`; checkpoints and results use the roots and `split_id` declared by the
 selected config.

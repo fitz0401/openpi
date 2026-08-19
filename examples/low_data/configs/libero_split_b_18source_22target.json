@@ -1,0 +1,37 @@
+{
+  "schema_version": 3,
+  "split_id": "libero_split_b_18s22t_v0",
+  "task_order_index": 0,
+  "task_splits": [
+    {"suite": "libero_spatial", "source_task_ids": [1, 3, 5, 7, 8, 9], "target_task_ids": [0, 2, 4, 6]},
+    {"suite": "libero_object", "source_task_ids": [1, 3, 5, 7, 8, 9], "target_task_ids": [0, 2, 4, 6]},
+    {"suite": "libero_goal", "source_task_ids": [1, 3, 5, 7, 8, 9], "target_task_ids": [0, 2, 4, 6]},
+    {"suite": "libero_10", "source_task_ids": [], "target_task_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
+  ],
+  "base_checkpoint": "gs://openpi-assets/checkpoints/pi05_base",
+  "checkpoint_root": "./checkpoints/paper_split_b",
+  "results_root": "./results/paper_split_b",
+  "source": {"optimizer_steps": 4500, "batch_size": 32},
+  "adaptation": {
+    "data_budgets": ["1", "5", "10", "25", "all_available"],
+    "methods": ["lora"],
+    "method_data_budgets": {"lora": ["1", "5", "10", "25", "all_available"]},
+    "seeds": [0, 1, 2],
+    "suite_seed_overrides": {"libero_10": [0]},
+    "data_budget_seed_overrides": {"all_available": [0]},
+    "effective_epochs": 10.0,
+    "per_device_batch_size": 32,
+    "world_size": 1,
+    "gradient_accumulation_steps": 1,
+    "hard_max_steps": null
+  },
+  "evaluation": {
+    "target_num_trials_by_suite": {"libero_spatial": 50, "libero_object": 50, "libero_goal": 50, "libero_10": 25},
+    "source_retention_num_trials": 25,
+    "source_retention_subset_seeds": [0],
+    "source_retention_disabled_target_suites": ["libero_10"],
+    "replan_steps": 5,
+    "rollout_horizons": {"libero_spatial": 220, "libero_object": 280, "libero_goal": 300, "libero_10": 520},
+    "allow_nonstandard_rollout_horizons": false
+  }
+}

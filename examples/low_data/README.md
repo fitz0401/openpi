@@ -177,6 +177,9 @@ normalization-stat validation, Pi0.5 checkpoint prefetch, and full LIBERO datase
 
 ```bash
 cd /sofia/projects/2026_start_025/openpi
+export HF_HOME=/sofia/projects/2026_start_025/cache/openpi_low_data_cache/huggingface
+export HF_TOKEN_PATH="$HOME/.cache/huggingface/token"
+uv run huggingface-cli login
 scripts/bootstrap_low_data_sofia.sh
 source .cluster/low_data.env
 ```
@@ -185,13 +188,13 @@ Any current 18-source/22-target split uses the same config-driven native-Slurm c
 
 ```bash
 MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh \
-  examples/low_data/configs/libero_split_abc_18source_22target.json
+  examples/low_data/configs/libero_split_b_18source_22target.json
 ```
 
-The original config applies partition A to Spatial/Object/Goal. The additional ABC config keeps
-Spatial A but uses distinct Object B and Goal C partitions. Both jointly mix 18 source tasks into
-one Stage-A checkpoint, hold out 12 S/O/G targets, and add ten LIBERO-10 targets. Only the config
-path changes; the training and evaluation orchestration is identical.
+Split A applies partition A to Spatial/Object/Goal, Split B applies B to all three suites, and
+Split C applies C to all three suites. Every config jointly mixes 18 source tasks into one Stage-A
+checkpoint, holds out 12 S/O/G targets, and adds ten LIBERO-10 targets. Only the config path
+changes; the training and evaluation orchestration is identical.
 
 One explicit Stage-B cell uses a data-budget label, not `NUM_DEMOS`:
 
