@@ -181,27 +181,17 @@ scripts/bootstrap_low_data_sofia.sh
 source .cluster/low_data.env
 ```
 
-Any current source composition and its Stage B use the same config-driven native-Slurm chain:
+Any current 18-source/22-target split uses the same config-driven native-Slurm chain:
 
 ```bash
 MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh \
-  examples/low_data/configs/libero_source_spatial_object_12source.json
+  examples/low_data/configs/libero_split_abc_18source_22target.json
 ```
 
-Three additional source-composition checkpoints use the same six task IDs per included suite:
-Spatial+Object, Spatial+Goal, and Object+Goal (12 source tasks each). Selecting one of their configs
-above submits its complete Stage-A/Stage-B chain. Their source budget is 3,000 optimizer steps,
-proportional to the main checkpoint's 4,500 steps at 18 tasks, so the approximate exposure per
-included source task remains controlled. For a Stage-A-only sweep of all three, use:
-
-```bash
-MAX_SOURCE_CONCURRENT=2 scripts/submit_low_data_source_sweep_slurm.sh
-```
-
-Their configs and output namespaces are respectively
-`libero_source_spatial_object_12s_v0`, `libero_source_spatial_goal_12s_v0`, and
-`libero_source_object_goal_12s_v0`, under `checkpoints/paper_source_sweep` and
-`results/paper_source_sweep`.
+The original config applies partition A to Spatial/Object/Goal. The additional ABC config keeps
+Spatial A but uses distinct Object B and Goal C partitions. Both jointly mix 18 source tasks into
+one Stage-A checkpoint, hold out 12 S/O/G targets, and add ten LIBERO-10 targets. Only the config
+path changes; the training and evaluation orchestration is identical.
 
 One explicit Stage-B cell uses a data-budget label, not `NUM_DEMOS`:
 

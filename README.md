@@ -50,21 +50,18 @@ tables, audits, and plots remain persistent.
 
 ### Current source/target splits
 
-All configs use target IDs `[5, 1, 3, 0]` in LIBERO-Spatial, Object, and Goal, plus all ten
-LIBERO-10 tasks as targets. An included source suite contributes IDs `[4, 2, 9, 7, 6, 8]`.
-Source and target IDs are disjoint.
+Every formal config jointly mixes six Spatial, six Object, and six Goal source tasks into one
+18-source Stage-A checkpoint. Each suite's other four tasks are held out, and all ten LIBERO-10
+tasks are additional targets. Source and target IDs are always disjoint.
 
-| Config | Stage-A source composition | Source tasks | Stage-A steps |
-|---|---|---:|---:|
-| [`libero_main_18source_22target.json`](examples/low_data/configs/libero_main_18source_22target.json) | Spatial + Object + Goal | 18 | 4,500 |
-| [`libero_source_spatial_object_12source.json`](examples/low_data/configs/libero_source_spatial_object_12source.json) | Spatial + Object | 12 | 3,000 |
-| [`libero_source_spatial_goal_12source.json`](examples/low_data/configs/libero_source_spatial_goal_12source.json) | Spatial + Goal | 12 | 3,000 |
-| [`libero_source_object_goal_12source.json`](examples/low_data/configs/libero_source_object_goal_12source.json) | Object + Goal | 12 | 3,000 |
+| Config | Spatial source → target | Object source → target | Goal source → target |
+|---|---|---|---|
+| [`libero_main_18source_22target.json`](examples/low_data/configs/libero_main_18source_22target.json) | A `[4,2,9,7,6,8]` → `[5,1,3,0]` | A `[4,2,9,7,6,8]` → `[5,1,3,0]` | A `[4,2,9,7,6,8]` → `[5,1,3,0]` |
+| [`libero_split_abc_18source_22target.json`](examples/low_data/configs/libero_split_abc_18source_22target.json) | A `[4,2,9,7,6,8]` → `[5,1,3,0]` | B `[1,3,5,7,8,9]` → `[0,2,4,6]` | C `[0,2,3,4,5,6]` → `[1,7,8,9]` |
 
-The 12-source budget is proportional to the 18-source budget, preserving approximate optimizer
-exposure per included source task. Changing experiments requires selecting a different config;
-the orchestration scripts derive the task manifest, grid size, output namespace, and evaluation
-workload from that file.
+Both configs use 4,500 Stage-A optimizer steps and produce one immutable 18-source checkpoint.
+Changing experiments requires selecting a different config; orchestration derives the task
+manifest, 206-cell grid, output namespace, and evaluation workload from that file.
 
 ### Sofia: setup and one-command Stage A + Stage B
 
@@ -96,19 +93,13 @@ Submit a complete Stage-A → Stage-B → finalizer chain by choosing one config
 source .cluster/low_data.env
 
 MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh \
-  examples/low_data/configs/libero_source_spatial_object_12source.json
+  examples/low_data/configs/libero_split_abc_18source_22target.json
 ```
 
-Replace only the config path to run Spatial+Goal, Object+Goal, or the unified 18-source split.
-Defaults are eight concurrent Stage-B cells, 48 hours for Stage A, 12 hours per Stage-B cell, and
-two hours for finalization. Logs are written to `job_record/`; checkpoints and results use the
-roots and `split_id` declared by the selected config.
-
-To train only the three 12-source Stage-A checkpoints without Stage B:
-
-```bash
-MAX_SOURCE_CONCURRENT=2 scripts/submit_low_data_source_sweep_slurm.sh
-```
+Replace only the config path to run the original AAA split. Defaults are eight concurrent Stage-B
+cells, 48 hours for Stage A, 12 hours per Stage-B cell, and two hours for finalization. Logs are
+written to `job_record/`; checkpoints and results use the roots and `split_id` declared by the
+selected config.
 
 ### Hortense submission
 
