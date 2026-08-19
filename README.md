@@ -1,5 +1,137 @@
 # openpi
 
+## Guidance: compatibility-aware low-data adaptation
+
+This fork adds the paper workflow for studying how source experience changes the amount of target
+supervision needed to adapt a pretrained π₀.₅ robot policy. The central hypothesis is that
+adaptation is not uniform: source–target behavioral compatibility can be estimated with a small
+progress probe and used to identify where additional target demonstrations are most valuable.
+
+The implementation reuses OpenPI's trainer, LIBERO LeRobot dataloader, checkpoint format, policy
+server, and evaluator. The upstream OpenPI documentation is preserved below. Detailed protocol
+documentation lives in [`examples/low_data/README.md`](examples/low_data/README.md).
+
+### Formal adaptation protocol
+
+Each JSON config defines one complete, dependency-ordered experiment:
+
+```text
+π₀.₅ base checkpoint
+  -> Stage A: joint source-task adaptation
+  -> immutable source checkpoint
+  -> Stage B: independent LoRA adaptation for one target/task/budget/seed
+  -> evaluation, checkpoint cleanup, audit, aggregation, and plots
+```
+
+Stage B never loads source demonstrations and never carries an adapted target checkpoint into a
+different target run. Target trajectory subsets are deterministic and nested for each
+`(target_task, subset_seed)`:
+
+```text
+D1 ⊂ D5 ⊂ D10 ⊂ D25 ⊂ all_available
+```
+
+The exact D1 trajectory is recorded as `c1_trajectory_id`, so compatibility C1 is paired with the
+same demonstration used by each seed's one-demo adaptation run. The formal grid uses LoRA only,
+fixed `effective_epochs=10`, no minimum-step floor, and no silent optimizer-step truncation.
+
+Evaluation is resource-aware:
+
+| Evaluation | Trials | Seeds |
+|---|---:|---|
+| Spatial/Object/Goal target SR | 50 | 0, 1, 2 |
+| Spatial/Object/Goal source retention | 25 per source task | seed 0 only |
+| LIBERO-10 target SR | 25 | seed 0 only |
+| LIBERO-10 source retention | disabled | — |
+
+The standard 22-target grid contains 206 independent Stage-B cells. Target checkpoints are
+created in node-local temporary storage and deleted after evaluation; result manifests, tidy
+tables, audits, and plots remain persistent.
+
+### Current source/target splits
+
+All configs use target IDs `[5, 1, 3, 0]` in LIBERO-Spatial, Object, and Goal, plus all ten
+LIBERO-10 tasks as targets. An included source suite contributes IDs `[4, 2, 9, 7, 6, 8]`.
+Source and target IDs are disjoint.
+
+| Config | Stage-A source composition | Source tasks | Stage-A steps |
+|---|---|---:|---:|
+| [`libero_main_18source_22target.json`](examples/low_data/configs/libero_main_18source_22target.json) | Spatial + Object + Goal | 18 | 4,500 |
+| [`libero_source_spatial_object_12source.json`](examples/low_data/configs/libero_source_spatial_object_12source.json) | Spatial + Object | 12 | 3,000 |
+| [`libero_source_spatial_goal_12source.json`](examples/low_data/configs/libero_source_spatial_goal_12source.json) | Spatial + Goal | 12 | 3,000 |
+| [`libero_source_object_goal_12source.json`](examples/low_data/configs/libero_source_object_goal_12source.json) | Object + Goal | 12 | 3,000 |
+
+The 12-source budget is proportional to the 18-source budget, preserving approximate optimizer
+exposure per included source task. Changing experiments requires selecting a different config;
+the orchestration scripts derive the task manifest, grid size, output namespace, and evaluation
+workload from that file.
+
+### Sofia: setup and one-command Stage A + Stage B
+
+Sofia uses project `/sofia/projects/2026_start_025`, account
+`zen4-h200-2026_start_025-1`, partition `zen4_h200`, H200 GPUs, and `CUDA/12.8.0`.
+
+Install `uv`, clone the repository, and run the idempotent bootstrap once:
+
+```bash
+ssh vsc39029@login.sofia.vub.be
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+cd /sofia/projects/2026_start_025
+git clone https://github.com/fitz0401/openpi.git openpi
+cd openpi
+
+scripts/bootstrap_low_data_sofia.sh
+source .cluster/low_data.env
+```
+
+The bootstrap creates both Python environments, initializes submodules, validates normalization
+statistics, and prefetches the π₀.₅ base checkpoint and complete LIBERO dataset into the shared
+project cache.
+
+Submit a complete Stage-A → Stage-B → finalizer chain by choosing one config:
+
+```bash
+source .cluster/low_data.env
+
+MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh \
+  examples/low_data/configs/libero_source_spatial_object_12source.json
+```
+
+Replace only the config path to run Spatial+Goal, Object+Goal, or the unified 18-source split.
+Defaults are eight concurrent Stage-B cells, 48 hours for Stage A, 12 hours per Stage-B cell, and
+two hours for finalization. Logs are written to `job_record/`; checkpoints and results use the
+roots and `split_id` declared by the selected config.
+
+To train only the three 12-source Stage-A checkpoints without Stage B:
+
+```bash
+MAX_SOURCE_CONCURRENT=2 scripts/submit_low_data_source_sweep_slurm.sh
+```
+
+### Hortense submission
+
+Hortense uses its `qsub` compatibility interface. A new complete config-driven chain is:
+
+```bash
+MAX_CONCURRENT=8 scripts/submit_low_data_main.sh \
+  examples/low_data/configs/libero_main_18source_22target.json
+```
+
+When a compatible Stage-A checkpoint already exists, the Stage-B-only resubmitter refreshes stale
+source/zero-shot baselines, launches the array, and finalizes automatically:
+
+```bash
+MAX_CONCURRENT=8 scripts/submit_low_data_stage_b.sh \
+  examples/low_data/configs/libero_main_18source_22target.json
+```
+
+Monitor either cluster with `squeue -u "$USER"`. Native-Slurm logs use
+`job_record/<job-name>.<job-id>[_<array-index>].{out,err}`.
+
+---
+
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
 
 Currently, this repo contains three types of models:

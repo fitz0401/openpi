@@ -1,5 +1,5 @@
 #!/bin/bash
-# Submit the formal Stage A -> Stage B array -> finalizer chain with native Slurm sbatch.
+# Submit any schema-v3 low-data config as Stage A -> Stage B array -> finalizer on native Slurm.
 
 set -euo pipefail
 
@@ -40,7 +40,7 @@ export LIBERO_VENV
 export HF_HOME=${HF_HOME:-${OPENPI_CACHE_ROOT}/huggingface}
 export OPENPI_DATA_HOME=${OPENPI_DATA_HOME:-${OPENPI_CACHE_ROOT}/openpi}
 
-read -r GRID_SIZE NUM_SOURCE NUM_TARGET NUM_SEEDS NUM_LIBERO10_SEEDS NUM_ALL_AVAILABLE_SEEDS METHODS EVAL_PROTOCOL_ID RESULTS_DIR <<< "$(uv run python - "${EXPERIMENT_CONFIG}" <<'PY'
+read -r GRID_SIZE NUM_SOURCE NUM_TARGET METHODS EVAL_PROTOCOL_ID RESULTS_DIR SPLIT_ID <<< "$(uv run python - "${EXPERIMENT_CONFIG}" <<'PY'
 import pathlib
 import sys
 
@@ -51,23 +51,19 @@ print(
     len(target_grid(config)),
     len(config.source_task_refs()),
     len(config.target_task_refs()),
-    len(config.adaptation.seeds),
-    len(config.adaptation.seeds_for("libero_10", "1")),
-    len(config.adaptation.seeds_for("libero_spatial", "all_available")),
     ",".join(config.adaptation.methods),
     config.evaluation.protocol_id,
     pathlib.Path(config.results_root) / config.split_id,
+    config.split_id,
 )
 PY
 )"
 
-if [ "${NUM_SOURCE}" -ne 18 ] || [ "${NUM_TARGET}" -ne 22 ] || [ "${METHODS}" != lora ] || \
-   [ "${NUM_SEEDS}" -ne 3 ] || [ "${NUM_LIBERO10_SEEDS}" -ne 1 ] || \
-   [ "${NUM_ALL_AVAILABLE_SEEDS}" -ne 1 ] || [ "${GRID_SIZE}" -ne 206 ] || \
+if [ "${NUM_SOURCE}" -lt 1 ] || [ "${NUM_TARGET}" -lt 1 ] || [ "${METHODS}" != lora ] || \
+   [ "${GRID_SIZE}" -lt 1 ] || \
    [ "${EVAL_PROTOCOL_ID}" != sog_target50_l10_target25_retention25_seed0_no_l10_retention ]; then
-  echo "Refusing unexpected protocol: source=${NUM_SOURCE}, target=${NUM_TARGET}, methods=${METHODS}, " \
-       "seeds=${NUM_SEEDS}, libero10_seeds=${NUM_LIBERO10_SEEDS}, all_available_seeds=${NUM_ALL_AVAILABLE_SEEDS}, " \
-       "cells=${GRID_SIZE}, evaluation_protocol=${EVAL_PROTOCOL_ID}" >&2
+  echo "Refusing invalid formal protocol: split=${SPLIT_ID}, source=${NUM_SOURCE}, target=${NUM_TARGET}, " \
+       "methods=${METHODS}, cells=${GRID_SIZE}, evaluation_protocol=${EVAL_PROTOCOL_ID}" >&2
   exit 2
 fi
 
@@ -90,12 +86,13 @@ GPU_COMMON=(
   "${CONSTRAINT_ARGS[@]}"
 )
 
-echo "Submitting native-Slurm paper grid: ${GRID_SIZE} cells, evaluation=${EVAL_PROTOCOL_ID}, concurrency ${MAX_CONCURRENT}."
+echo "Submitting ${SPLIT_ID}: ${NUM_SOURCE} source tasks -> ${NUM_TARGET} targets / ${GRID_SIZE} Stage-B cells."
+echo "Evaluation=${EVAL_PROTOCOL_ID}; concurrency=${MAX_CONCURRENT}."
 echo "GPU partition=${SLURM_PARTITION} gres=${SLURM_GPU_GRES} memory=${SLURM_GPU_MEMORY}"
 
 STAGE_A_JOB_ID=$(sbatch --parsable \
   "${GPU_COMMON[@]}" \
-  --job-name=ld_main_A \
+  --job-name="ld_A_${SPLIT_ID}" \
   --time="${SLURM_STAGE_A_TIME}" \
   --output="${REPO_ROOT}/job_record/%x.%j.out" \
   --error="${REPO_ROOT}/job_record/%x.%j.err" \
@@ -105,7 +102,7 @@ STAGE_A_JOB_ID=$(sbatch --parsable \
 ARRAY_RANGE="0-$((GRID_SIZE - 1))%${MAX_CONCURRENT}"
 STAGE_B_JOB_ID=$(sbatch --parsable \
   "${GPU_COMMON[@]}" \
-  --job-name=ld_main_B \
+  --job-name="ld_B_${SPLIT_ID}" \
   --time="${SLURM_STAGE_B_TIME}" \
   --dependency="afterok:${STAGE_A_JOB_ID}" \
   --array="${ARRAY_RANGE}" \
@@ -122,7 +119,7 @@ FINAL_JOB_ID=$(sbatch --parsable \
   --cpus-per-task=4 \
   --mem=16G \
   --partition="${SLURM_CPU_PARTITION}" \
-  --job-name=ld_finalize \
+  --job-name="ld_F_${SPLIT_ID}" \
   --time="${SLURM_FINALIZE_TIME}" \
   --dependency="afterany:${STAGE_B_JOB_ID}" \
   --output="${REPO_ROOT}/job_record/%x.%j.out" \
@@ -150,6 +147,9 @@ path.write_text(
             "submitted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "scheduler": "native_slurm",
             "experiment_config": sys.argv[2],
+            "split_id": config.split_id,
+            "num_source_tasks": len(config.source_task_refs()),
+            "num_target_tasks": len(config.target_task_refs()),
             "stage_a_job_id": sys.argv[3],
             "stage_b_array_job_id": sys.argv[4],
             "finalize_job_id": sys.argv[5],

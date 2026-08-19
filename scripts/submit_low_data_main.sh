@@ -1,5 +1,5 @@
 #!/bin/bash
-# Submit Stage A -> throttled Stage B -> final aggregation as one PBS dependency chain.
+# Submit any schema-v3 config as Stage A -> throttled Stage B -> finalizer through qsub.
 
 set -euo pipefail
 
@@ -34,11 +34,7 @@ print(
 PY
 )"
 
-if [ "${NUM_SOURCE}" -ne 18 ] || [ "${NUM_TARGET}" -ne 22 ]; then
-  echo "Refusing unexpected Split-A task manifest: source=${NUM_SOURCE}, target=${NUM_TARGET}" >&2
-  exit 2
-fi
-if [ "${METHODS}" != lora ] || [ "${NUM_SEEDS}" -ne 3 ] || [ "${NUM_LIBERO10_SEEDS}" -ne 1 ] || [ "${NUM_ALL_AVAILABLE_SEEDS}" -ne 1 ] || [ "${GRID_SIZE}" -ne 206 ] || [ "${EVAL_PROTOCOL_ID}" != sog_target50_l10_target25_retention25_seed0_no_l10_retention ]; then
+if [ "${NUM_SOURCE}" -lt 1 ] || [ "${NUM_TARGET}" -lt 1 ] || [ "${METHODS}" != lora ] || [ "${GRID_SIZE}" -lt 1 ] || [ "${EVAL_PROTOCOL_ID}" != sog_target50_l10_target25_retention25_seed0_no_l10_retention ]; then
   echo "Refusing unexpected paper grid: methods=${METHODS}, global_seeds=${NUM_SEEDS}, libero10_seeds=${NUM_LIBERO10_SEEDS}, all_available_seeds=${NUM_ALL_AVAILABLE_SEEDS}, cells=${GRID_SIZE}, evaluation_protocol=${EVAL_PROTOCOL_ID}" >&2
   exit 2
 fi

@@ -159,7 +159,7 @@ Submit the complete formal dependency chain through native `sbatch` with:
 
 ```bash
 source .cluster/low_data.env
-MAX_CONCURRENT=8 scripts/submit_low_data_main_slurm.sh \
+MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh \
   examples/low_data/configs/libero_main_18source_22target.json
 ```
 
@@ -181,18 +181,18 @@ scripts/bootstrap_low_data_sofia.sh
 source .cluster/low_data.env
 ```
 
-The main 18-source checkpoint and its 206-cell Stage B use the standard native-Slurm chain:
+Any current source composition and its Stage B use the same config-driven native-Slurm chain:
 
 ```bash
-MAX_CONCURRENT=8 scripts/submit_low_data_main_slurm.sh \
-  examples/low_data/configs/libero_main_18source_22target.json
+MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh \
+  examples/low_data/configs/libero_source_spatial_object_12source.json
 ```
 
 Three additional source-composition checkpoints use the same six task IDs per included suite:
-Spatial+Object, Spatial+Goal, and Object+Goal (12 source tasks each). They are Stage-A-only jobs;
-no leave-out Stage-B grid is submitted automatically. Their source budget is 3,000 optimizer
-steps, proportional to the main checkpoint's 4,500 steps at 18 tasks, so the approximate exposure
-per included source task remains controlled:
+Spatial+Object, Spatial+Goal, and Object+Goal (12 source tasks each). Selecting one of their configs
+above submits its complete Stage-A/Stage-B chain. Their source budget is 3,000 optimizer steps,
+proportional to the main checkpoint's 4,500 steps at 18 tasks, so the approximate exposure per
+included source task remains controlled. For a Stage-A-only sweep of all three, use:
 
 ```bash
 MAX_SOURCE_CONCURRENT=2 scripts/submit_low_data_source_sweep_slurm.sh
