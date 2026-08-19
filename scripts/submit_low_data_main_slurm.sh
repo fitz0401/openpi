@@ -8,7 +8,7 @@ EXPERIMENT_CONFIG=${1:-${REPO_ROOT}/examples/low_data/configs/libero_main_18sour
 EXPERIMENT_CONFIG=$(realpath "${EXPERIMENT_CONFIG}")
 OPENPI_CACHE_ROOT=${OPENPI_CACHE_ROOT:-${SCRATCH:-${HOME}/.cache}/openpi_low_data_cache}
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
-MAX_CONCURRENT=${MAX_CONCURRENT:-4}
+MAX_CONCURRENT=${MAX_CONCURRENT:-8}
 
 SLURM_PARTITION=${SLURM_PARTITION:?Set SLURM_PARTITION for GPU jobs}
 SLURM_CPU_PARTITION=${SLURM_CPU_PARTITION:-${SLURM_PARTITION}}
@@ -16,15 +16,15 @@ SLURM_GPU_GRES=${SLURM_GPU_GRES:-gpu:1}
 SLURM_CPUS_PER_GPU=${SLURM_CPUS_PER_GPU:-12}
 SLURM_GPU_MEMORY=${SLURM_GPU_MEMORY:-125G}
 SLURM_STAGE_A_TIME=${SLURM_STAGE_A_TIME:-48:00:00}
-SLURM_STAGE_B_TIME=${SLURM_STAGE_B_TIME:-24:00:00}
+SLURM_STAGE_B_TIME=${SLURM_STAGE_B_TIME:-12:00:00}
 SLURM_FINALIZE_TIME=${SLURM_FINALIZE_TIME:-02:00:00}
 
 if ! command -v sbatch >/dev/null 2>&1; then
   echo "Native Slurm submission requires sbatch." >&2
   exit 2
 fi
-if ! [[ "${MAX_CONCURRENT}" =~ ^[1-4]$ ]]; then
-  echo "MAX_CONCURRENT must be between 1 and 4 (got ${MAX_CONCURRENT})." >&2
+if ! [[ "${MAX_CONCURRENT}" =~ ^[1-8]$ ]]; then
+  echo "MAX_CONCURRENT must be between 1 and 8 (got ${MAX_CONCURRENT})." >&2
   exit 2
 fi
 if [ "${OPENPI_SKIP_MODULES:-0}" != 1 ] && [ -z "${OPENPI_GPU_MODULES:-}" ]; then

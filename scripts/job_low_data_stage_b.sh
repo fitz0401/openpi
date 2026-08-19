@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -l nodes=1:ppn=12:gpus=1
-#PBS -l walltime=24:00:00
+#PBS -l walltime=12:00:00
 #PBS -A starting_2026_047
 
 # Train and evaluate ONE independent (target, method, data_budget, seed) adaptation run.

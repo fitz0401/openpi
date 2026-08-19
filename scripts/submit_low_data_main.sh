@@ -6,10 +6,10 @@ set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 EXPERIMENT_CONFIG=${1:-examples/low_data/configs/libero_main_18source_22target.json}
 EXPERIMENT_CONFIG=$(realpath "${EXPERIMENT_CONFIG}")
-MAX_CONCURRENT=${MAX_CONCURRENT:-4}
+MAX_CONCURRENT=${MAX_CONCURRENT:-8}
 
-if ! [[ "${MAX_CONCURRENT}" =~ ^[1-4]$ ]]; then
-  echo "MAX_CONCURRENT must be between 1 and 4 for the unattended main run (got ${MAX_CONCURRENT})." >&2
+if ! [[ "${MAX_CONCURRENT}" =~ ^[1-8]$ ]]; then
+  echo "MAX_CONCURRENT must be between 1 and 8 for the unattended main run (got ${MAX_CONCURRENT})." >&2
   exit 2
 fi
 
@@ -97,7 +97,7 @@ path.write_text(
             "evaluation_protocol": config.evaluation.protocol_manifest(),
             "evaluation_workload": evaluation_workload(config),
             "max_concurrent": int(sys.argv[12]),
-            "stage_b_walltime": "24:00:00",
+            "stage_b_walltime": "12:00:00",
         },
         indent=2,
     )

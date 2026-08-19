@@ -6,10 +6,10 @@ set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 EXPERIMENT_CONFIG=${1:-examples/low_data/configs/libero_main_18source_22target.json}
 EXPERIMENT_CONFIG=$(realpath "${EXPERIMENT_CONFIG}")
-MAX_CONCURRENT=${MAX_CONCURRENT:-4}
+MAX_CONCURRENT=${MAX_CONCURRENT:-8}
 
-if ! [[ "${MAX_CONCURRENT}" =~ ^[1-4]$ ]]; then
-  echo "MAX_CONCURRENT must be between 1 and 4 (got ${MAX_CONCURRENT})" >&2
+if ! [[ "${MAX_CONCURRENT}" =~ ^[1-8]$ ]]; then
+  echo "MAX_CONCURRENT must be between 1 and 8 (got ${MAX_CONCURRENT})" >&2
   exit 2
 fi
 
@@ -134,7 +134,7 @@ record = {
     "max_concurrent": int(sys.argv[12]),
     "source_checkpoint": sys.argv[13],
     "baseline_eval_walltime": "24:00:00",
-    "stage_b_walltime": "24:00:00",
+    "stage_b_walltime": "12:00:00",
 }
 if previous is not None:
     record["original_stage_a_job_id"] = previous.get("stage_a_job_id") or previous.get("original_stage_a_job_id")

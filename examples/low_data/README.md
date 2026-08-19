@@ -108,21 +108,21 @@ The final protocol writes to `checkpoints/paper_split_a` and `results/paper_spli
 from historical outputs. A future complete dependency chain can be submitted with:
 
 ```bash
-MAX_CONCURRENT=4 scripts/submit_low_data_main.sh
+MAX_CONCURRENT=8 scripts/submit_low_data_main.sh
 ```
 
 If Stage A already completed under an older evaluation protocol, reuse its immutable checkpoint
 and submit only the refreshed mixed-trial baseline evaluation, Stage B, and finalizer with:
 
 ```bash
-MAX_CONCURRENT=4 scripts/submit_low_data_stage_b.sh \
+MAX_CONCURRENT=8 scripts/submit_low_data_stage_b.sh \
   examples/low_data/configs/libero_main_18source_22target.json
 ```
 
 The Stage-B-only submitter never retrains Stage A. It verifies the source checkpoint, refreshes
 source/zero-shot evaluation when its recorded protocol signature is stale, and makes the Stage-B
-array depend on that refresh. Stage-B cells and the evaluation-only baseline refresh request 24
-hours.
+array depend on that refresh. Stage-B cells request 12 hours; the heavier evaluation-only
+baseline refresh retains a 24-hour request.
 
 The finalizer writes the uniquely named archive
 `results/paper_split_a/paper_split_a__libero_main_18s22t_v0.tar.gz`; extract it into a dedicated
@@ -159,7 +159,7 @@ Submit the complete formal dependency chain through native `sbatch` with:
 
 ```bash
 source .cluster/low_data.env
-MAX_CONCURRENT=4 scripts/submit_low_data_main_slurm.sh \
+MAX_CONCURRENT=8 scripts/submit_low_data_main_slurm.sh \
   examples/low_data/configs/libero_main_18source_22target.json
 ```
 
@@ -184,7 +184,7 @@ source .cluster/low_data.env
 The main 18-source checkpoint and its 206-cell Stage B use the standard native-Slurm chain:
 
 ```bash
-MAX_CONCURRENT=4 scripts/submit_low_data_main_slurm.sh \
+MAX_CONCURRENT=8 scripts/submit_low_data_main_slurm.sh \
   examples/low_data/configs/libero_main_18source_22target.json
 ```
 
