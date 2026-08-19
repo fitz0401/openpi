@@ -38,7 +38,12 @@ def _write_json(path: pathlib.Path, payload) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def _evaluate_tasks(args, experiment, train_manifest, task_refs: list[TaskRef]) -> dict[TaskRef, float]:
+def _evaluate_tasks(
+    args,
+    experiment,
+    train_manifest,
+    task_num_trials: dict[TaskRef, int],
+) -> dict[TaskRef, float]:
     rates: dict[TaskRef, float] = {}
     with continual_eval.policy_server(
         str(args.repo_root),
@@ -49,28 +54,29 @@ def _evaluate_tasks(args, experiment, train_manifest, task_refs: list[TaskRef]) 
         args.server_timeout_s,
     ):
         client = websocket_client_policy.WebsocketClientPolicy("0.0.0.0", args.port)
-        for suite in dict.fromkeys(ref.suite for ref in task_refs):
+        for suite in dict.fromkeys(ref.suite for ref in task_num_trials):
             task_suite = benchmark.get_benchmark_dict()[suite](task_order_index=experiment.task_order_index)
-            rollout_args = continual_eval.Args(
-                manifest="unused",
-                repo_root=str(args.repo_root),
-                serve_config=train_manifest["serve_config"],
-                task_suite_name=suite,
-                num_trials=experiment.evaluation.num_trials,
-                max_steps=experiment.evaluation.rollout_horizon(suite),
-                replan_steps=experiment.evaluation.replan_steps,
-                port=args.port,
-                server_gpu=args.server_gpu,
-                server_timeout_s=args.server_timeout_s,
-                seed=7,
-            )
-            for ref in (ref for ref in task_refs if ref.suite == suite):
+            for ref in (ref for ref in task_num_trials if ref.suite == suite):
+                num_trials = task_num_trials[ref]
+                rollout_args = continual_eval.Args(
+                    manifest="unused",
+                    repo_root=str(args.repo_root),
+                    serve_config=train_manifest["serve_config"],
+                    task_suite_name=suite,
+                    num_trials=num_trials,
+                    max_steps=experiment.evaluation.rollout_horizon(suite),
+                    replan_steps=experiment.evaluation.replan_steps,
+                    port=args.port,
+                    server_gpu=args.server_gpu,
+                    server_timeout_s=args.server_timeout_s,
+                    seed=7,
+                )
                 rates[ref] = continual_eval.eval_task(
                     client,
                     task_suite,
                     ref.task_id,
                     rollout_args,
-                    experiment.evaluation.num_trials,
+                    num_trials,
                 )
     return rates
 
@@ -84,10 +90,13 @@ def _target_rows(
     epsilon: float,
 ):
     source_refs = experiment.source_task_refs()
-    source_after = {ref: rates[ref] for ref in source_refs}
     macro_before = sum(source_before.values()) / len(source_before)
-    macro_after = sum(source_after.values()) / len(source_after)
     target_ref = TaskRef(train_manifest["target_suite"], train_manifest["target_task_id"])
+    retention_evaluated = all(ref in rates for ref in source_refs)
+    source_after = {ref: rates[ref] for ref in source_refs} if retention_evaluated else {}
+    macro_after = sum(source_after.values()) / len(source_after) if retention_evaluated else None
+    macro_forgetting = macro_before - macro_after if macro_after is not None else None
+    macro_retention = macro_after / max(macro_before, epsilon) if macro_after is not None else None
     adapted_target_success = rates[target_ref]
     common = {
         "source_split_id": train_manifest["source_split_id"],
@@ -112,14 +121,19 @@ def _target_rows(
         "calculated_optimizer_steps": train_manifest["calculated_optimizer_steps"],
         "actual_optimizer_steps": train_manifest["actual_optimizer_steps"],
         "samples_seen": train_manifest["samples_seen"],
-        "num_trials": experiment.evaluation.num_trials,
+        "evaluation_protocol": experiment.evaluation.protocol_manifest(),
+        "target_num_trials": experiment.evaluation.target_num_trials(target_ref.suite),
+        "source_retention_num_trials": (
+            experiment.evaluation.source_retention_num_trials if retention_evaluated else None
+        ),
+        "source_retention_evaluated": retention_evaluated,
         "zero_shot_target_success": target_success_zero_shot,
         "adapted_target_success": adapted_target_success,
         "target_gain": adapted_target_success - target_success_zero_shot,
         "source_success_before_macro": macro_before,
         "source_success_after_macro": macro_after,
-        "source_forgetting_macro": macro_before - macro_after,
-        "source_retention_macro": macro_after / max(macro_before, epsilon),
+        "source_forgetting_macro": macro_forgetting,
+        "source_retention_macro": macro_retention,
         # Compatibility aliases that do not relabel all_available as a nominal demo budget.
         "num_selected_trajectories": train_manifest["actual_num_demos"],
         "seed": train_manifest["subset_seed"],
@@ -130,7 +144,7 @@ def _target_rows(
         "target_success_gain": adapted_target_success - target_success_zero_shot,
     }
     rows = []
-    for ref in source_refs:
+    for ref in source_refs if retention_evaluated else ():
         before = source_before[ref]
         after = source_after[ref]
         rows.append(
@@ -139,6 +153,7 @@ def _target_rows(
                 "evaluated_task_suite": ref.suite,
                 "evaluated_task_id": ref.task_id,
                 "evaluated_task_role": "source",
+                "num_trials": experiment.evaluation.source_retention_num_trials,
                 "rollout_horizon": experiment.evaluation.rollout_horizon(ref.suite),
                 "success_rate": after,
                 "source_success_before": before,
@@ -154,13 +169,14 @@ def _target_rows(
             "evaluated_task_suite": target_ref.suite,
             "evaluated_task_id": target_ref.task_id,
             "evaluated_task_role": "target",
+            "num_trials": experiment.evaluation.target_num_trials(target_ref.suite),
             "rollout_horizon": experiment.evaluation.rollout_horizon(target_ref.suite),
             "success_rate": rates[target_ref],
             "target_success_gain": rates[target_ref] - target_success_zero_shot,
             "source_success_before": macro_before,
             "source_success_after": macro_after,
-            "source_forgetting": macro_before - macro_after,
-            "source_retention": macro_after / max(macro_before, epsilon),
+            "source_forgetting": macro_forgetting,
+            "source_retention": macro_retention,
             "source_metric_scope": "macro",
         }
     )
@@ -189,7 +205,8 @@ def _write_target_zero_shot(experiment, train_manifest: dict, rates: dict[TaskRe
             "target_tasks": [dataclasses.asdict(ref) for ref in experiment.target_task_refs()],
             "target_success_zero_shot": {ref.key: rates[ref] for ref in experiment.target_task_refs()},
             "rollout_horizons": experiment.evaluation.rollout_horizons,
-            "num_trials": experiment.evaluation.num_trials,
+            "target_num_trials_by_suite": experiment.evaluation.target_num_trials_by_suite,
+            "evaluation_protocol": experiment.evaluation.protocol_manifest(),
             "checkpoint_dir": train_manifest["checkpoint_dir"],
         },
     )
@@ -225,7 +242,11 @@ def main() -> None:
     if train_manifest["stage"] == "source":
         source_refs = experiment.source_task_refs()
         target_refs = experiment.target_task_refs()
-        rates = _evaluate_tasks(args, experiment, train_manifest, [*source_refs, *target_refs])
+        task_num_trials = {
+            **dict.fromkeys(source_refs, experiment.evaluation.source_retention_num_trials),
+            **{ref: experiment.evaluation.target_num_trials(ref.suite) for ref in target_refs},
+        }
+        rates = _evaluate_tasks(args, experiment, train_manifest, task_num_trials)
         payload = {
             "split_id": experiment.split_id,
             "source_task_ids": experiment.source_task_ids_by_suite(),
@@ -236,7 +257,9 @@ def main() -> None:
             "target_tasks": [dataclasses.asdict(ref) for ref in target_refs],
             "target_success_zero_shot": {ref.key: rates[ref] for ref in target_refs},
             "rollout_horizons": experiment.evaluation.rollout_horizons,
-            "num_trials": experiment.evaluation.num_trials,
+            "source_retention_num_trials": experiment.evaluation.source_retention_num_trials,
+            "target_num_trials_by_suite": experiment.evaluation.target_num_trials_by_suite,
+            "evaluation_protocol": experiment.evaluation.protocol_manifest(),
             "checkpoint_dir": train_manifest["checkpoint_dir"],
         }
         _write_json(result_dir / "source_eval.json", payload)
@@ -246,6 +269,9 @@ def main() -> None:
         if not source_eval_path.exists():
             raise FileNotFoundError(f"Stage-A evaluation is required first: {source_eval_path}")
         source_eval = json.loads(source_eval_path.read_text())
+        expected_evaluation_protocol = experiment.evaluation.protocol_manifest()
+        if source_eval.get("evaluation_protocol") != expected_evaluation_protocol:
+            raise ValueError("Stage-A source evaluation does not match the configured evaluation protocol.")
         source_before = _read_task_rates(source_eval, "source_success_before", experiment.source_task_refs())
         zero_shot_path = source_eval_path.parent / "target_zero_shot_eval.json"
         if not zero_shot_path.exists():
@@ -253,9 +279,19 @@ def main() -> None:
                 f"Target zero-shot evaluation is required; run scripts/job_low_data_zero_shot.sh: {zero_shot_path}"
             )
         zero_shot = json.loads(zero_shot_path.read_text())
+        if zero_shot.get("evaluation_protocol") != expected_evaluation_protocol:
+            raise ValueError("Stage-A zero-shot evaluation does not match the configured evaluation protocol.")
         target_ref = TaskRef(train_manifest["target_suite"], train_manifest["target_task_id"])
         target_success_zero_shot = _read_task_rates(zero_shot, "target_success_zero_shot", (target_ref,))[target_ref]
-        rates = _evaluate_tasks(args, experiment, train_manifest, [target_ref, *experiment.source_task_refs()])
+        task_num_trials = {target_ref: experiment.evaluation.target_num_trials(target_ref.suite)}
+        if experiment.evaluation.should_evaluate_source_retention(
+            target_suite=target_ref.suite,
+            subset_seed=int(train_manifest["subset_seed"]),
+        ):
+            task_num_trials.update(
+                dict.fromkeys(experiment.source_task_refs(), experiment.evaluation.source_retention_num_trials)
+            )
+        rates = _evaluate_tasks(args, experiment, train_manifest, task_num_trials)
         rows = _target_rows(
             experiment,
             train_manifest,
@@ -271,7 +307,13 @@ def main() -> None:
                 "train_manifest": train_manifest,
                 "success_rates": {ref.key: value for ref, value in rates.items()},
                 "source_eval_path": str(source_eval_path),
-                "num_trials": experiment.evaluation.num_trials,
+                "target_num_trials": experiment.evaluation.target_num_trials(target_ref.suite),
+                "source_retention_evaluated": experiment.evaluation.should_evaluate_source_retention(
+                    target_suite=target_ref.suite,
+                    subset_seed=int(train_manifest["subset_seed"]),
+                ),
+                "source_retention_num_trials": experiment.evaluation.source_retention_num_trials,
+                "evaluation_protocol": experiment.evaluation.protocol_manifest(),
             },
         )
     else:

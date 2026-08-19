@@ -70,31 +70,47 @@ def main() -> None:
             errors.append(f"missing {eval_path}")
         else:
             eval_payload = json.loads(eval_path.read_text())
-            if eval_payload.get("num_trials") != config.evaluation.num_trials:
-                errors.append(
-                    f"evaluation num_trials={eval_payload.get('num_trials')!r}, "
-                    f"expected {config.evaluation.num_trials}"
-                )
+            expected_protocol = config.evaluation.protocol_manifest()
+            if eval_payload.get("evaluation_protocol") != expected_protocol:
+                errors.append("evaluation protocol does not match the configured formal protocol")
+            expected_retention = config.evaluation.should_evaluate_source_retention(
+                target_suite=suite, subset_seed=seed
+            )
+            if eval_payload.get("target_num_trials") != config.evaluation.target_num_trials(suite):
+                errors.append("target trial count does not match target suite protocol")
+            if eval_payload.get("source_retention_evaluated") is not expected_retention:
+                errors.append(f"source_retention_evaluated must be {expected_retention}")
+            rows = [json.loads(line) for line in (run_dir / "tidy_results.jsonl").read_text().splitlines()]
+            target_rows = [row for row in rows if row["evaluated_task_role"] == "target"]
+            source_rows = [row for row in rows if row["evaluated_task_role"] == "source"]
+            if len(target_rows) != 1 or target_rows[0].get("num_trials") != config.evaluation.target_num_trials(suite):
+                errors.append("tidy output must contain one target row with the suite-specific trial count")
+            expected_source_rows = len(config.source_task_refs()) if expected_retention else 0
+            if len(source_rows) != expected_source_rows:
+                errors.append(f"expected {expected_source_rows} source-retention rows, got {len(source_rows)}")
+            if any(row.get("num_trials") != config.evaluation.source_retention_num_trials for row in source_rows):
+                errors.append("source-retention row uses an incorrect trial count")
         if errors:
             protocol_violations.append({**cell, "errors": errors})
         else:
             completed.append(cell)
     source_dir = result_root / "source"
     baseline_paths = (source_dir / "source_eval.json", source_dir / "target_zero_shot_eval.json")
-    baseline_num_trials = {}
+    baseline_protocols = {}
     for path in baseline_paths:
         try:
-            baseline_num_trials[path.name] = json.loads(path.read_text()).get("num_trials")
+            baseline_protocols[path.name] = json.loads(path.read_text()).get("evaluation_protocol")
         except (FileNotFoundError, json.JSONDecodeError):
-            baseline_num_trials[path.name] = None
-    baseline_protocol_valid = all(value == config.evaluation.num_trials for value in baseline_num_trials.values())
+            baseline_protocols[path.name] = None
+    expected_protocol = config.evaluation.protocol_manifest()
+    baseline_protocol_valid = all(value == expected_protocol for value in baseline_protocols.values())
     payload = {
         "split_id": config.split_id,
         "source_train_complete": (source_dir / "train_manifest.json").is_file(),
         "source_eval_complete": (source_dir / "source_eval.json").is_file(),
         "zero_shot_complete": (source_dir / "target_zero_shot_eval.json").is_file(),
-        "expected_num_trials": config.evaluation.num_trials,
-        "baseline_num_trials": baseline_num_trials,
+        "expected_evaluation_protocol": expected_protocol,
+        "baseline_evaluation_protocols": baseline_protocols,
         "baseline_protocol_valid": baseline_protocol_valid,
         "expected_stage_b_runs": len(completed) + len(missing) + len(protocol_violations),
         "completed_stage_b_runs": len(completed),

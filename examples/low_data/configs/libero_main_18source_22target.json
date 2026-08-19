@@ -51,7 +51,15 @@
     "hard_max_steps": null
   },
   "evaluation": {
-    "num_trials": 25,
+    "target_num_trials_by_suite": {
+      "libero_spatial": 50,
+      "libero_object": 50,
+      "libero_goal": 50,
+      "libero_10": 25
+    },
+    "source_retention_num_trials": 25,
+    "source_retention_subset_seeds": [0],
+    "source_retention_disabled_target_suites": ["libero_10"],
     "replan_steps": 5,
     "rollout_horizons": {
       "libero_spatial": 220,

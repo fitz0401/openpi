@@ -8,6 +8,7 @@ from openpi.training.low_data.experiment import ALL_AVAILABLE_BUDGET
 from openpi.training.low_data.experiment import FINAL_DATA_BUDGETS
 from openpi.training.low_data.experiment import OFFICIAL_ROLLOUT_HORIZONS
 from openpi.training.low_data.experiment import AdaptationRecipe
+from openpi.training.low_data.experiment import evaluation_workload
 from openpi.training.low_data.experiment import load_experiment_config
 from openpi.training.low_data.experiment import nested_episode_subsets
 from openpi.training.low_data.experiment import subset_statistics
@@ -99,10 +100,35 @@ def test_final_split_a_config_is_frozen_and_paired():
     assert config.adaptation.hard_max_steps is None
     assert config.evaluation.rollout_horizons == OFFICIAL_ROLLOUT_HORIZONS
     assert config.adaptation.seeds == (0, 1, 2)
-    assert config.evaluation.num_trials == 25
+    assert config.evaluation.target_num_trials_by_suite == {
+        "libero_spatial": 50,
+        "libero_object": 50,
+        "libero_goal": 50,
+        "libero_10": 25,
+    }
+    assert config.evaluation.source_retention_num_trials == 25
+    assert config.evaluation.source_retention_subset_seeds == (0,)
+    assert config.evaluation.source_retention_disabled_target_suites == ("libero_10",)
     assert len(target_grid(config)) == 206
     assert target_grid(config)[0] == ("libero_spatial", 5, "lora", "1", 0)
     assert target_grid(config)[-1] == ("libero_10", 9, "lora", ALL_AVAILABLE_BUDGET, 0)
+
+
+def test_final_evaluation_workload_is_resource_aware():
+    config = load_experiment_config(_REPO_ROOT / "examples/low_data/configs/libero_main_18source_22target.json")
+    workload = evaluation_workload(config)
+    assert workload["stage_b_cells"] == 206
+    assert workload["target_cells_by_suite"] == {
+        "libero_spatial": 52,
+        "libero_object": 52,
+        "libero_goal": 52,
+        "libero_10": 50,
+    }
+    assert workload["source_retention_cells"] == 60
+    assert workload["target_rollouts"] == 9_050
+    assert workload["source_retention_rollouts"] == 27_000
+    assert workload["total_rollouts"] == 36_050
+    assert workload["total_max_env_steps"] == 9_930_000
 
 
 def test_suite_seed_override_only_changes_requested_suite():
@@ -116,6 +142,22 @@ def test_suite_seed_override_only_changes_requested_suite():
     assert controlled_seeds == {0, 1, 2}
     assert libero_10_seeds == {0}
     assert all_available_seeds == {0}
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_suites"),
+    [
+        ("libero_source_spatial_object_12source.json", {"libero_spatial", "libero_object"}),
+        ("libero_source_spatial_goal_12source.json", {"libero_spatial", "libero_goal"}),
+        ("libero_source_object_goal_12source.json", {"libero_object", "libero_goal"}),
+    ],
+)
+def test_leave_one_suite_out_source_configs(filename, expected_suites):
+    config = load_experiment_config(_REPO_ROOT / "examples/low_data/configs" / filename)
+    assert len(config.source_task_refs()) == 12
+    assert {ref.suite for ref in config.source_task_refs()} == expected_suites
+    assert config.source.optimizer_steps == 3000
+    assert len(config.target_task_refs()) == 22
 
 
 def test_nonstandard_rollout_horizon_is_rejected_without_debug_override():

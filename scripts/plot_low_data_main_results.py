@@ -18,7 +18,8 @@ DATA_BUDGET_POSITIONS = {"1": 1, "5": 5, "10": 10, "25": 25, "all_available": 50
 
 
 def _mean(values: list[float]) -> float:
-    return float(np.mean(values)) if values else float("nan")
+    finite = [value for value in values if np.isfinite(value)]
+    return float(np.mean(finite)) if finite else float("nan")
 
 
 def _budget_position(data_budget: str) -> int:
@@ -34,14 +35,10 @@ def _read_target_rows(path: pathlib.Path) -> list[dict]:
         row["data_budget_position"] = _budget_position(row["requested_data_budget"])
         for field in ("target_task_id", "seed", "optimizer_steps"):
             row[field] = int(row[field])
-        for field in (
-            "success_rate",
-            "source_success_after",
-            "source_forgetting",
-            "source_retention",
-            "target_success_zero_shot",
-        ):
+        for field in ("success_rate", "target_success_zero_shot"):
             row[field] = float(row[field])
+        for field in ("source_success_after", "source_forgetting", "source_retention"):
+            row[field] = float(row[field]) if row.get(field) not in (None, "") else float("nan")
     return rows
 
 

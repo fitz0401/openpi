@@ -158,14 +158,35 @@ class AdaptationRecipe:
 
 @dataclasses.dataclass(frozen=True)
 class EvalRecipe:
-    num_trials: int = 20
+    target_num_trials_by_suite: dict[str, int] = dataclasses.field(
+        default_factory=lambda: {
+            "libero_spatial": 50,
+            "libero_object": 50,
+            "libero_goal": 50,
+            "libero_10": 25,
+        }
+    )
+    source_retention_num_trials: int = 25
+    source_retention_subset_seeds: tuple[int, ...] = (0,)
+    source_retention_disabled_target_suites: tuple[str, ...] = ("libero_10",)
     replan_steps: int = 5
     rollout_horizons: dict[str, int] = dataclasses.field(default_factory=lambda: dict(OFFICIAL_ROLLOUT_HORIZONS))
     allow_nonstandard_rollout_horizons: bool = False
 
     def validate(self) -> None:
-        if self.num_trials <= 0 or self.replan_steps <= 0:
+        if self.source_retention_num_trials <= 0 or self.replan_steps <= 0:
             raise ValueError("Evaluation trial and replanning counts must be positive.")
+        if set(self.target_num_trials_by_suite) != set(OFFICIAL_ROLLOUT_HORIZONS):
+            raise ValueError("target_num_trials_by_suite must define every official LIBERO suite exactly once.")
+        if any(num_trials <= 0 for num_trials in self.target_num_trials_by_suite.values()):
+            raise ValueError("Target evaluation trial counts must be positive.")
+        if not self.source_retention_subset_seeds or len(set(self.source_retention_subset_seeds)) != len(
+            self.source_retention_subset_seeds
+        ):
+            raise ValueError("source_retention_subset_seeds must be non-empty and unique.")
+        unknown_disabled = set(self.source_retention_disabled_target_suites) - set(OFFICIAL_ROLLOUT_HORIZONS)
+        if unknown_disabled:
+            raise ValueError(f"Unknown source-retention-disabled target suites: {sorted(unknown_disabled)}")
         if not self.allow_nonstandard_rollout_horizons and self.rollout_horizons != OFFICIAL_ROLLOUT_HORIZONS:
             raise ValueError(
                 f"Final protocol requires official rollout_horizons={OFFICIAL_ROLLOUT_HORIZONS}; "
@@ -177,6 +198,44 @@ class EvalRecipe:
 
     def rollout_horizon(self, suite: str) -> int:
         return self.rollout_horizons[suite]
+
+    def target_num_trials(self, suite: str) -> int:
+        return self.target_num_trials_by_suite[suite]
+
+    def should_evaluate_source_retention(self, *, target_suite: str, subset_seed: int) -> bool:
+        return (
+            target_suite not in self.source_retention_disabled_target_suites
+            and subset_seed in self.source_retention_subset_seeds
+        )
+
+    def protocol_manifest(self) -> dict[str, object]:
+        return {
+            "target_num_trials_by_suite": dict(self.target_num_trials_by_suite),
+            "source_retention_num_trials": self.source_retention_num_trials,
+            "source_retention_subset_seeds": list(self.source_retention_subset_seeds),
+            "source_retention_disabled_target_suites": list(self.source_retention_disabled_target_suites),
+            "replan_steps": self.replan_steps,
+            "rollout_horizons": dict(self.rollout_horizons),
+        }
+
+    @property
+    def protocol_id(self) -> str:
+        expected = {
+            "target_num_trials_by_suite": {
+                "libero_spatial": 50,
+                "libero_object": 50,
+                "libero_goal": 50,
+                "libero_10": 25,
+            },
+            "source_retention_num_trials": 25,
+            "source_retention_subset_seeds": [0],
+            "source_retention_disabled_target_suites": ["libero_10"],
+            "replan_steps": 5,
+            "rollout_horizons": dict(OFFICIAL_ROLLOUT_HORIZONS),
+        }
+        if self.protocol_manifest() == expected:
+            return "sog_target50_l10_target25_retention25_seed0_no_l10_retention"
+        return "custom_evaluation_protocol"
 
 
 @dataclasses.dataclass(frozen=True, order=True)
@@ -243,6 +302,9 @@ class PilotExperimentConfig:
         unknown_seed_override_suites = set(self.adaptation.suite_seed_overrides) - set(suite_names)
         if unknown_seed_override_suites:
             raise ValueError(f"Seed overrides reference unknown suites: {sorted(unknown_seed_override_suites)}")
+        unknown_retention_seeds = set(self.evaluation.source_retention_subset_seeds) - set(self.adaptation.seeds)
+        if unknown_retention_seeds:
+            raise ValueError(f"Source-retention evaluation references unknown seeds: {sorted(unknown_retention_seeds)}")
         self.adaptation.validate()
         self.evaluation.validate()
 
@@ -346,7 +408,17 @@ def load_experiment_config(path: str | pathlib.Path) -> PilotExperimentConfig:
             ),
         ),
         evaluation=EvalRecipe(
-            num_trials=int(raw.get("evaluation", {}).get("num_trials", 20)),
+            target_num_trials_by_suite={
+                str(suite): int(num_trials)
+                for suite, num_trials in raw["evaluation"]["target_num_trials_by_suite"].items()
+            },
+            source_retention_num_trials=int(raw["evaluation"]["source_retention_num_trials"]),
+            source_retention_subset_seeds=tuple(
+                int(seed) for seed in raw["evaluation"]["source_retention_subset_seeds"]
+            ),
+            source_retention_disabled_target_suites=tuple(
+                str(suite) for suite in raw["evaluation"]["source_retention_disabled_target_suites"]
+            ),
             replan_steps=int(raw.get("evaluation", {}).get("replan_steps", 5)),
             rollout_horizons={
                 str(suite): int(horizon)
@@ -372,6 +444,41 @@ def target_grid(config: PilotExperimentConfig) -> list[tuple[str, int, str, str,
         for data_budget in config.adaptation.data_budgets_for_method(method)
         for seed in config.adaptation.seeds_for(target.suite, data_budget)
     ]
+
+
+def evaluation_workload(config: PilotExperimentConfig) -> dict[str, object]:
+    """Summarize the exact rollout workload implied by the Stage-B grid."""
+    target_rollouts_by_suite = dict.fromkeys(OFFICIAL_ROLLOUT_HORIZONS, 0)
+    target_cells_by_suite = dict.fromkeys(OFFICIAL_ROLLOUT_HORIZONS, 0)
+    retention_cells = 0
+    for suite, _task_id, _method, _data_budget, seed in target_grid(config):
+        target_cells_by_suite[suite] += 1
+        target_rollouts_by_suite[suite] += config.evaluation.target_num_trials(suite)
+        if config.evaluation.should_evaluate_source_retention(target_suite=suite, subset_seed=seed):
+            retention_cells += 1
+
+    target_rollouts = sum(target_rollouts_by_suite.values())
+    retention_rollouts = (
+        retention_cells * len(config.source_task_refs()) * config.evaluation.source_retention_num_trials
+    )
+    target_max_env_steps = sum(
+        target_rollouts_by_suite[suite] * config.evaluation.rollout_horizon(suite)
+        for suite in OFFICIAL_ROLLOUT_HORIZONS
+    )
+    source_horizon_sum = sum(config.evaluation.rollout_horizon(ref.suite) for ref in config.source_task_refs())
+    retention_max_env_steps = retention_cells * config.evaluation.source_retention_num_trials * source_horizon_sum
+    return {
+        "stage_b_cells": len(target_grid(config)),
+        "target_cells_by_suite": target_cells_by_suite,
+        "source_retention_cells": retention_cells,
+        "target_rollouts_by_suite": target_rollouts_by_suite,
+        "target_rollouts": target_rollouts,
+        "source_retention_rollouts": retention_rollouts,
+        "total_rollouts": target_rollouts + retention_rollouts,
+        "target_max_env_steps": target_max_env_steps,
+        "source_retention_max_env_steps": retention_max_env_steps,
+        "total_max_env_steps": target_max_env_steps + retention_max_env_steps,
+    }
 
 
 def target_result_dir(

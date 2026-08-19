@@ -14,7 +14,7 @@ if ! [[ "${MAX_CONCURRENT}" =~ ^[1-4]$ ]]; then
 fi
 
 cd "${REPO_ROOT}"
-read -r GRID_SIZE NUM_SOURCE NUM_TARGET NUM_SEEDS NUM_LIBERO10_SEEDS NUM_ALL_AVAILABLE_SEEDS METHODS NUM_TRIALS RESULTS_DIR <<< "$(uv run python - "${EXPERIMENT_CONFIG}" <<'PY'
+read -r GRID_SIZE NUM_SOURCE NUM_TARGET NUM_SEEDS NUM_LIBERO10_SEEDS NUM_ALL_AVAILABLE_SEEDS METHODS EVAL_PROTOCOL_ID RESULTS_DIR <<< "$(uv run python - "${EXPERIMENT_CONFIG}" <<'PY'
 import pathlib
 import sys
 from openpi.training.low_data.experiment import load_experiment_config, target_grid
@@ -28,7 +28,7 @@ print(
     len(config.adaptation.seeds_for("libero_10", "1")),
     len(config.adaptation.seeds_for("libero_spatial", "all_available")),
     ",".join(config.adaptation.methods),
-    config.evaluation.num_trials,
+    config.evaluation.protocol_id,
     pathlib.Path(config.results_root) / config.split_id,
 )
 PY
@@ -38,13 +38,13 @@ if [ "${NUM_SOURCE}" -ne 18 ] || [ "${NUM_TARGET}" -ne 22 ]; then
   echo "Refusing unexpected Split-A task manifest: source=${NUM_SOURCE}, target=${NUM_TARGET}" >&2
   exit 2
 fi
-if [ "${METHODS}" != lora ] || [ "${NUM_SEEDS}" -ne 3 ] || [ "${NUM_LIBERO10_SEEDS}" -ne 1 ] || [ "${NUM_ALL_AVAILABLE_SEEDS}" -ne 1 ] || [ "${GRID_SIZE}" -ne 206 ] || [ "${NUM_TRIALS}" -ne 25 ]; then
-  echo "Refusing unexpected paper grid: methods=${METHODS}, global_seeds=${NUM_SEEDS}, libero10_seeds=${NUM_LIBERO10_SEEDS}, all_available_seeds=${NUM_ALL_AVAILABLE_SEEDS}, cells=${GRID_SIZE}, num_trials=${NUM_TRIALS}" >&2
+if [ "${METHODS}" != lora ] || [ "${NUM_SEEDS}" -ne 3 ] || [ "${NUM_LIBERO10_SEEDS}" -ne 1 ] || [ "${NUM_ALL_AVAILABLE_SEEDS}" -ne 1 ] || [ "${GRID_SIZE}" -ne 206 ] || [ "${EVAL_PROTOCOL_ID}" != sog_target50_l10_target25_retention25_seed0_no_l10_retention ]; then
+  echo "Refusing unexpected paper grid: methods=${METHODS}, global_seeds=${NUM_SEEDS}, libero10_seeds=${NUM_LIBERO10_SEEDS}, all_available_seeds=${NUM_ALL_AVAILABLE_SEEDS}, cells=${GRID_SIZE}, evaluation_protocol=${EVAL_PROTOCOL_ID}" >&2
   exit 2
 fi
 
 echo "Submitting paper Split-A: ${NUM_SOURCE} source tasks, ${NUM_TARGET} target tasks, ${NUM_SEEDS} seeds."
-echo "Stage B: ${GRID_SIZE} LoRA-only cells; LIBERO-10 and all_available use seed 0, ${NUM_TRIALS} trials, maximum ${MAX_CONCURRENT} concurrent."
+echo "Stage B: ${GRID_SIZE} LoRA-only cells; LIBERO-10 and all_available use seed 0; evaluation=${EVAL_PROTOCOL_ID}; maximum ${MAX_CONCURRENT} concurrent."
 my_dodrio_quota -p starting_2026_047 || true
 
 STAGE_A_JOB_ID=$(qsub \
@@ -70,13 +70,16 @@ mkdir -p "${RESULTS_DIR}"
 uv run python - "${RESULTS_DIR}/submission_manifest.json" "${EXPERIMENT_CONFIG}" \
   "${STAGE_A_JOB_ID}" "${STAGE_B_JOB_ID}" "${FINAL_JOB_ID}" "${ARRAY_RANGE}" \
   "${GRID_SIZE}" "${NUM_SEEDS}" "${NUM_LIBERO10_SEEDS}" "${NUM_ALL_AVAILABLE_SEEDS}" "${METHODS}" \
-  "${NUM_TRIALS}" "${MAX_CONCURRENT}" <<'PY'
+  "${MAX_CONCURRENT}" <<'PY'
 import datetime
 import json
 import pathlib
 import sys
 
+from openpi.training.low_data.experiment import evaluation_workload, load_experiment_config
+
 path = pathlib.Path(sys.argv[1])
+config = load_experiment_config(sys.argv[2])
 path.write_text(
     json.dumps(
         {
@@ -91,8 +94,9 @@ path.write_text(
             "num_libero_10_seeds": int(sys.argv[9]),
             "num_all_available_seeds": int(sys.argv[10]),
             "methods": sys.argv[11].split(","),
-            "num_trials": int(sys.argv[12]),
-            "max_concurrent": int(sys.argv[13]),
+            "evaluation_protocol": config.evaluation.protocol_manifest(),
+            "evaluation_workload": evaluation_workload(config),
+            "max_concurrent": int(sys.argv[12]),
             "stage_b_walltime": "24:00:00",
         },
         indent=2,

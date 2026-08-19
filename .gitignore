@@ -1,5 +1,8 @@
 # Data directories.
-assets/
+assets/**
+!assets/pi05_libero_low_data_full/
+!assets/pi05_libero_low_data_full/libero_low_data/
+!assets/pi05_libero_low_data_full/libero_low_data/norm_stats.json
 checkpoints/
 data/
 wandb/
@@ -137,6 +140,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.cluster/
 env/
 venv/
 ENV/

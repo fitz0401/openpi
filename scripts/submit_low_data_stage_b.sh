@@ -14,7 +14,7 @@ if ! [[ "${MAX_CONCURRENT}" =~ ^[1-4]$ ]]; then
 fi
 
 cd "${REPO_ROOT}"
-read -r GRID_SIZE NUM_SOURCE NUM_TARGET NUM_SEEDS NUM_LIBERO10_SEEDS NUM_ALL_AVAILABLE_SEEDS METHODS NUM_TRIALS RESULTS_DIR SOURCE_CHECKPOINT BASELINE_READY <<< "$(uv run python - "${EXPERIMENT_CONFIG}" <<'PY'
+read -r GRID_SIZE NUM_SOURCE NUM_TARGET NUM_SEEDS NUM_LIBERO10_SEEDS NUM_ALL_AVAILABLE_SEEDS METHODS EVAL_PROTOCOL_ID RESULTS_DIR SOURCE_CHECKPOINT BASELINE_READY <<< "$(uv run python - "${EXPERIMENT_CONFIG}" <<'PY'
 import json
 import pathlib
 import sys
@@ -36,8 +36,9 @@ if not (checkpoint / "params").is_dir():
 
 baseline_paths = (source_dir / "source_eval.json", source_dir / "target_zero_shot_eval.json")
 try:
+    expected = config.evaluation.protocol_manifest()
     baseline_ready = all(
-        json.loads(path.read_text()).get("num_trials") == config.evaluation.num_trials for path in baseline_paths
+        json.loads(path.read_text()).get("evaluation_protocol") == expected for path in baseline_paths
     )
 except (FileNotFoundError, json.JSONDecodeError):
     baseline_ready = False
@@ -50,7 +51,7 @@ print(
     len(config.adaptation.seeds_for("libero_10", "1")),
     len(config.adaptation.seeds_for("libero_spatial", "all_available")),
     ",".join(config.adaptation.methods),
-    config.evaluation.num_trials,
+    config.evaluation.protocol_id,
     result_dir,
     checkpoint,
     int(baseline_ready),
@@ -62,22 +63,22 @@ if [ "${NUM_SOURCE}" -ne 18 ] || [ "${NUM_TARGET}" -ne 22 ]; then
   echo "Refusing unexpected Split-A task manifest: source=${NUM_SOURCE}, target=${NUM_TARGET}" >&2
   exit 2
 fi
-if [ "${METHODS}" != lora ] || [ "${NUM_SEEDS}" -ne 3 ] || [ "${NUM_LIBERO10_SEEDS}" -ne 1 ] || [ "${NUM_ALL_AVAILABLE_SEEDS}" -ne 1 ] || [ "${GRID_SIZE}" -ne 206 ] || [ "${NUM_TRIALS}" -ne 25 ]; then
-  echo "Refusing unexpected paper grid: methods=${METHODS}, global_seeds=${NUM_SEEDS}, libero10_seeds=${NUM_LIBERO10_SEEDS}, all_available_seeds=${NUM_ALL_AVAILABLE_SEEDS}, cells=${GRID_SIZE}, num_trials=${NUM_TRIALS}" >&2
+if [ "${METHODS}" != lora ] || [ "${NUM_SEEDS}" -ne 3 ] || [ "${NUM_LIBERO10_SEEDS}" -ne 1 ] || [ "${NUM_ALL_AVAILABLE_SEEDS}" -ne 1 ] || [ "${GRID_SIZE}" -ne 206 ] || [ "${EVAL_PROTOCOL_ID}" != sog_target50_l10_target25_retention25_seed0_no_l10_retention ]; then
+  echo "Refusing unexpected paper grid: methods=${METHODS}, global_seeds=${NUM_SEEDS}, libero10_seeds=${NUM_LIBERO10_SEEDS}, all_available_seeds=${NUM_ALL_AVAILABLE_SEEDS}, cells=${GRID_SIZE}, evaluation_protocol=${EVAL_PROTOCOL_ID}" >&2
   exit 2
 fi
 
 echo "Reusing immutable Stage-A checkpoint: ${SOURCE_CHECKPOINT}"
-echo "Submitting ${GRID_SIZE} LoRA-only Stage-B cells with ${NUM_TRIALS} trials and maximum ${MAX_CONCURRENT} concurrent."
+echo "Submitting ${GRID_SIZE} LoRA-only Stage-B cells with evaluation=${EVAL_PROTOCOL_ID} and maximum ${MAX_CONCURRENT} concurrent."
 my_dodrio_quota -p starting_2026_047 || true
 
 BASELINE_JOB_ID=""
 DEPENDENCY_ARGS=()
 if [ "${BASELINE_READY}" = 1 ]; then
-  echo "Source and zero-shot baselines already use ${NUM_TRIALS} trials; no refresh job needed."
+  echo "Source and zero-shot baselines already match ${EVAL_PROTOCOL_ID}; no refresh job needed."
 else
   BASELINE_JOB_ID=$(qsub \
-    -N ld_base25 \
+    -N ld_base_eval \
     -l walltime=24:00:00 \
     -v "EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG},SOURCE_EVAL_ONLY=1" \
     scripts/job_low_data_stage_a.sh | tail -n 1)
@@ -103,13 +104,16 @@ mkdir -p "${RESULTS_DIR}"
 uv run python - "${RESULTS_DIR}/submission_manifest.json" "${EXPERIMENT_CONFIG}" \
   "${BASELINE_JOB_ID}" "${STAGE_B_JOB_ID}" "${FINAL_JOB_ID}" "${ARRAY_RANGE}" \
   "${GRID_SIZE}" "${NUM_SEEDS}" "${NUM_LIBERO10_SEEDS}" "${NUM_ALL_AVAILABLE_SEEDS}" "${METHODS}" \
-  "${NUM_TRIALS}" "${MAX_CONCURRENT}" "${SOURCE_CHECKPOINT}" <<'PY'
+  "${MAX_CONCURRENT}" "${SOURCE_CHECKPOINT}" <<'PY'
 import datetime
 import json
 import pathlib
 import sys
 
+from openpi.training.low_data.experiment import evaluation_workload, load_experiment_config
+
 path = pathlib.Path(sys.argv[1])
+config = load_experiment_config(sys.argv[2])
 timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
 previous = json.loads(path.read_text()) if path.exists() else None
 record = {
@@ -125,9 +129,10 @@ record = {
     "num_libero_10_seeds": int(sys.argv[9]),
     "num_all_available_seeds": int(sys.argv[10]),
     "methods": sys.argv[11].split(","),
-    "num_trials": int(sys.argv[12]),
-    "max_concurrent": int(sys.argv[13]),
-    "source_checkpoint": sys.argv[14],
+    "evaluation_protocol": config.evaluation.protocol_manifest(),
+    "evaluation_workload": evaluation_workload(config),
+    "max_concurrent": int(sys.argv[12]),
+    "source_checkpoint": sys.argv[13],
     "baseline_eval_walltime": "24:00:00",
     "stage_b_walltime": "24:00:00",
 }

@@ -74,8 +74,20 @@ paper grid uses target/subset seeds `[0, 1, 2]` for the 12 controlled Spatial/Ob
 and seed `[0]` for the 10 LIBERO-10 targets. `all_available` also uses seed 0 only for every suite.
 LoRA uses all five data budgets and Full FT is not submitted. The complete Stage-B grid is
 `(12 × 4 × 3) + (12 × 1) + (10 × 5 × 1) = 206` independent runs.
-Stage A is trained once with seed 0 and is immutable across every Stage-B cell. Every evaluation
-uses 25 rollout trials.
+Stage A is trained once with seed 0 and is immutable across every Stage-B cell.
+
+The resource-aware formal evaluation protocol separates target SR from source retention:
+
+- Spatial/Object/Goal target SR: 50 trials for every Stage-B seed;
+- Spatial/Object/Goal 18-task source retention: 25 trials only for subset seed 0;
+- LIBERO-10 target SR: 25 trials (seed 0 only);
+- LIBERO-10 source retention: disabled.
+
+Thus the training grid remains 206 independent cells, but only 60 cells evaluate source
+retention. Stage B runs 9,050 target rollouts plus 27,000 source-retention rollouts (36,050 total),
+instead of 97,850 rollouts under uniform 25-trial target+retention evaluation. A target-only
+result records null source-after/forgetting/retention values; it never fabricates retention from
+another seed.
 
 For each `(target, subset_seed)`, compatibility `C1` is defined on the exact trajectory selected
 by `D1`. Its episode ID is stored as `c1_trajectory_id` in every target train manifest and tidy
@@ -99,8 +111,8 @@ from historical outputs. A future complete dependency chain can be submitted wit
 MAX_CONCURRENT=4 scripts/submit_low_data_main.sh
 ```
 
-If Stage A already completed under an older evaluation count, reuse its immutable checkpoint and
-submit only the refreshed 25-trial baseline evaluation, Stage B, and finalizer with:
+If Stage A already completed under an older evaluation protocol, reuse its immutable checkpoint
+and submit only the refreshed mixed-trial baseline evaluation, Stage B, and finalizer with:
 
 ```bash
 MAX_CONCURRENT=4 scripts/submit_low_data_stage_b.sh \
@@ -108,15 +120,88 @@ MAX_CONCURRENT=4 scripts/submit_low_data_stage_b.sh \
 ```
 
 The Stage-B-only submitter never retrains Stage A. It verifies the source checkpoint, refreshes
-source/zero-shot evaluation when its recorded trial count is not 25, and makes the Stage-B array
-depend on that refresh. This keeps zero-shot gain and source forgetting on the same 25-trial
-protocol. Stage-B cells and the evaluation-only baseline refresh request 24 hours rather than the
-older 48-hour limit, improving backfill opportunities after halving the rollout count.
+source/zero-shot evaluation when its recorded protocol signature is stale, and makes the Stage-B
+array depend on that refresh. Stage-B cells and the evaluation-only baseline refresh request 24
+hours.
 
 The finalizer writes the uniquely named archive
 `results/paper_split_a/paper_split_a__libero_main_18s22t_v0.tar.gz`; extract it into a dedicated
 local paper-result directory because the audited source split ID intentionally remains
 `libero_main_18s22t_v0`.
+
+### Fresh native-Slurm cluster
+
+The verified normalization statistics required by `pi05_libero_low_data_full` and its LoRA
+variant are versioned at `assets/pi05_libero_low_data_full/libero_low_data/norm_stats.json`.
+Prepare a new shared-filesystem cluster installation and prefetch both the Pi0.5 base checkpoint
+and the complete `physical-intelligence/libero` LeRobot dataset with:
+
+```bash
+export OPENPI_REPO_ROOT=$PWD
+export OPENPI_CACHE_ROOT=/shared/scratch/$USER/openpi_low_data_cache
+export SLURM_ACCOUNT=my_account                 # omit if the cluster does not require one
+export SLURM_PARTITION=my_a100_partition
+export SLURM_CPU_PARTITION=my_cpu_partition     # optional; defaults to the GPU partition
+export OPENPI_GPU_MODULES="cuda/12.4 cudnn/9"   # cluster-specific
+# Or, if CUDA is already available without environment modules:
+# export OPENPI_SKIP_MODULES=1
+
+scripts/bootstrap_low_data_cluster.sh
+source .cluster/low_data.env
+```
+
+The bootstrap is idempotent. It initializes git submodules, creates the main uv environment and
+the Python-3.8 LIBERO client environment, validates the versioned norm stats, and warms the shared
+checkpoint and dataset caches. It intentionally does not guess cluster partition/account/module
+names.
+
+Submit the complete formal dependency chain through native `sbatch` with:
+
+```bash
+source .cluster/low_data.env
+MAX_CONCURRENT=4 scripts/submit_low_data_main_slurm.sh \
+  examples/low_data/configs/libero_main_18source_22target.json
+```
+
+The native-Slurm submitter supplies resources on the `sbatch` command line, records all job IDs,
+and reuses the same scheduler-neutral Stage-A/Stage-B/finalizer bodies as Dodrio. Useful optional
+resource overrides are `SLURM_GPU_GRES` (default `gpu:1`), `SLURM_GPU_MEMORY` (default `125G`),
+`SLURM_CPUS_PER_GPU` (default `12`), `SLURM_QOS`, and `SLURM_CONSTRAINT`.
+
+### Sofia profile and source-composition checkpoints
+
+Sofia uses project `/sofia/projects/2026_start_025`, account
+`zen4-h200-2026_start_025-1`, partition `zen4_h200`, H200 GRES, and `CUDA/12.8.0`. After cloning
+the repository to `/sofia/projects/2026_start_025/openpi`, one wrapper performs environment setup,
+normalization-stat validation, Pi0.5 checkpoint prefetch, and full LIBERO dataset prefetch:
+
+```bash
+cd /sofia/projects/2026_start_025/openpi
+scripts/bootstrap_low_data_sofia.sh
+source .cluster/low_data.env
+```
+
+The main 18-source checkpoint and its 206-cell Stage B use the standard native-Slurm chain:
+
+```bash
+MAX_CONCURRENT=4 scripts/submit_low_data_main_slurm.sh \
+  examples/low_data/configs/libero_main_18source_22target.json
+```
+
+Three additional source-composition checkpoints use the same six task IDs per included suite:
+Spatial+Object, Spatial+Goal, and Object+Goal (12 source tasks each). They are Stage-A-only jobs;
+no leave-out Stage-B grid is submitted automatically. Their source budget is 3,000 optimizer
+steps, proportional to the main checkpoint's 4,500 steps at 18 tasks, so the approximate exposure
+per included source task remains controlled:
+
+```bash
+MAX_SOURCE_CONCURRENT=2 scripts/submit_low_data_source_sweep_slurm.sh
+```
+
+Their configs and output namespaces are respectively
+`libero_source_spatial_object_12s_v0`, `libero_source_spatial_goal_12s_v0`, and
+`libero_source_object_goal_12s_v0`, under `checkpoints/paper_source_sweep` and
+`results/paper_source_sweep`.
 
 One explicit Stage-B cell uses a data-budget label, not `NUM_DEMOS`:
 

@@ -7,7 +7,7 @@
 
 set -uo pipefail
 
-REPO_ROOT=/dodrio/scratch/projects/starting_2026_047/openpi
+REPO_ROOT=${OPENPI_REPO_ROOT:-/dodrio/scratch/projects/starting_2026_047/openpi}
 cd "${REPO_ROOT}"
 EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG:?Set EXPERIMENT_CONFIG}
 

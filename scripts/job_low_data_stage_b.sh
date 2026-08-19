@@ -7,10 +7,12 @@
 
 set -euo pipefail
 
-REPO_ROOT=/dodrio/scratch/projects/starting_2026_047/openpi
+REPO_ROOT=${OPENPI_REPO_ROOT:-/dodrio/scratch/projects/starting_2026_047/openpi}
 cd "${REPO_ROOT}"
-module load cluster/dodrio/gpu_rome_a100_80_rhel9
-module load CUDA
+if [ "${OPENPI_SKIP_MODULES:-0}" != 1 ]; then
+  read -r -a OPENPI_MODULE_LIST <<< "${OPENPI_GPU_MODULES:-cluster/dodrio/gpu_rome_a100_80_rhel9 CUDA}"
+  module load "${OPENPI_MODULE_LIST[@]}"
+fi
 
 EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG:?Set EXPERIMENT_CONFIG}
 
@@ -41,9 +43,9 @@ SEED=${SEED:-0}
 DELETE_TARGET_CHECKPOINT=${DELETE_TARGET_CHECKPOINT:-1}
 DELETE_TARGET_CHECKPOINT_ON_FAILURE=${DELETE_TARGET_CHECKPOINT_ON_FAILURE:-1}
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
-JOB_TOKEN="${PBS_JOBID:-$$}_${ARRAY_INDEX:-0}"
+JOB_TOKEN="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}_${ARRAY_INDEX:-0}"
 JOB_TOKEN=${JOB_TOKEN//[!a-zA-Z0-9_.-]/_}
-JOB_TMPDIR=${JOB_TMPDIR:-${TMPDIR:-${VSC_SCRATCH_NODE:-/tmp}}/${USER}/openpi_low_data_${JOB_TOKEN}}
+JOB_TMPDIR=${JOB_TMPDIR:-${SLURM_TMPDIR:-${TMPDIR:-${VSC_SCRATCH_NODE:-/tmp}}}/${USER}/openpi_low_data_${JOB_TOKEN}}
 DESCRIPTOR="${JOB_TMPDIR}/low_data_target_train_manifest.json"
 mkdir -p "${JOB_TMPDIR}"
 
@@ -69,8 +71,8 @@ result_dir = pathlib.Path(sys.argv[2])
 try:
     matches = (
         (result_dir / "tidy_results.jsonl").stat().st_size > 0
-        and json.loads((result_dir / "eval_results.json").read_text()).get("num_trials")
-        == config.evaluation.num_trials
+        and json.loads((result_dir / "eval_results.json").read_text()).get("evaluation_protocol")
+        == config.evaluation.protocol_manifest()
     )
 except (FileNotFoundError, json.JSONDecodeError):
     matches = False
@@ -126,11 +128,12 @@ PORT_SEED="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}${ARRAY_INDEX:-0}"
 PORT_SEED=${PORT_SEED//[!0-9]/}
 PORT=${PORT:-$((18000 + 10#${PORT_SEED:-1} % 20000))}
 
-export HF_HOME=/dodrio/scratch/projects/starting_2026_047/cache/huggingface
+OPENPI_CACHE_ROOT=${OPENPI_CACHE_ROOT:-/dodrio/scratch/projects/starting_2026_047/cache}
+export HF_HOME=${HF_HOME:-${OPENPI_CACHE_ROOT}/huggingface}
 export HF_HUB_ENABLE_HF_TRANSFER=0
-export TRANSFORMERS_CACHE=$HF_HOME
-export OPENPI_DATA_HOME=/dodrio/scratch/projects/starting_2026_047/cache/openpi
-export CUDA_VISIBLE_DEVICES=0
+export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-$HF_HOME}
+export OPENPI_DATA_HOME=${OPENPI_DATA_HOME:-${OPENPI_CACHE_ROOT}/openpi}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export MUJOCO_GL=${MUJOCO_GL:-egl}
 export NUMBA_CACHE_DIR=${NUMBA_CACHE_DIR:-${JOB_TMPDIR}/numba}
