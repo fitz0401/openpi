@@ -123,7 +123,7 @@ STAGE_A_JOB_ID=$(sbatch --parsable \
   --output="${REPO_ROOT}/job_record/%x.%j.out" \
   --error="${REPO_ROOT}/job_record/%x.%j.err" \
   --export="ALL,EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG}" \
-  scripts/job_low_data_stage_a.sh)
+  --wrap="exec ${REPO_ROOT}/scripts/job_low_data_stage_a.sh")
 
 ARRAY_RANGE="0-$((GRID_SIZE - 1))%${MAX_CONCURRENT}"
 STAGE_B_JOB_ID=$(sbatch --parsable \
@@ -135,7 +135,7 @@ STAGE_B_JOB_ID=$(sbatch --parsable \
   --output="${REPO_ROOT}/job_record/%x.%A_%a.out" \
   --error="${REPO_ROOT}/job_record/%x.%A_%a.err" \
   --export="ALL,EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG},DELETE_TARGET_CHECKPOINT=1,DELETE_TARGET_CHECKPOINT_ON_FAILURE=1" \
-  scripts/job_low_data_stage_b.sh)
+  --wrap="exec ${REPO_ROOT}/scripts/job_low_data_stage_b.sh")
 
 FINAL_JOB_ID=$(sbatch --parsable \
   "${CPU_ACCOUNT_ARGS[@]}" \
@@ -151,7 +151,7 @@ FINAL_JOB_ID=$(sbatch --parsable \
   --output="${REPO_ROOT}/job_record/%x.%j.out" \
   --error="${REPO_ROOT}/job_record/%x.%j.err" \
   --export="ALL,EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG}" \
-  scripts/job_low_data_finalize.sh)
+  --wrap="exec ${REPO_ROOT}/scripts/job_low_data_finalize.sh")
 
 mkdir -p "${RESULTS_DIR}"
 uv run python - "${RESULTS_DIR}/submission_manifest.json" "${EXPERIMENT_CONFIG}" \
