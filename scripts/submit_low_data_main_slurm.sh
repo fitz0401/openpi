@@ -12,9 +12,13 @@ MAX_CONCURRENT=${MAX_CONCURRENT:-8}
 
 SLURM_PARTITION=${SLURM_PARTITION:?Set SLURM_PARTITION for GPU jobs}
 SLURM_CPU_PARTITION=${SLURM_CPU_PARTITION:-${SLURM_PARTITION}}
+SLURM_CPU_ACCOUNT=${SLURM_CPU_ACCOUNT:-${SLURM_ACCOUNT:-}}
+SLURM_GPU_REQUEST_MODE=${SLURM_GPU_REQUEST_MODE:-gres}
 SLURM_GPU_GRES=${SLURM_GPU_GRES:-gpu:1}
+SLURM_GPUS_PER_NODE=${SLURM_GPUS_PER_NODE:-1}
 SLURM_CPUS_PER_GPU=${SLURM_CPUS_PER_GPU:-12}
 SLURM_GPU_MEMORY=${SLURM_GPU_MEMORY:-125G}
+SLURM_FINALIZE_MEMORY=${SLURM_FINALIZE_MEMORY:-16G}
 SLURM_STAGE_A_TIME=${SLURM_STAGE_A_TIME:-48:00:00}
 SLURM_STAGE_B_TIME=${SLURM_STAGE_B_TIME:-12:00:00}
 SLURM_FINALIZE_TIME=${SLURM_FINALIZE_TIME:-02:00:00}
@@ -73,14 +77,36 @@ QOS_ARGS=()
 if [ -n "${SLURM_QOS:-}" ]; then QOS_ARGS+=(--qos="${SLURM_QOS}"); fi
 CONSTRAINT_ARGS=()
 if [ -n "${SLURM_CONSTRAINT:-}" ]; then CONSTRAINT_ARGS+=(--constraint="${SLURM_CONSTRAINT}"); fi
+GPU_REQUEST_ARGS=()
+case "${SLURM_GPU_REQUEST_MODE}" in
+  gres)
+    GPU_REQUEST_ARGS+=(--ntasks=1 --gres="${SLURM_GPU_GRES}")
+    ;;
+  gpus_per_node)
+    GPU_REQUEST_ARGS+=(--gpus-per-node="${SLURM_GPUS_PER_NODE}" --ntasks-per-gpu=1)
+    ;;
+  *)
+    echo "SLURM_GPU_REQUEST_MODE must be gres or gpus_per_node." >&2
+    exit 2
+    ;;
+esac
+GPU_MEMORY_ARGS=()
+if [ -n "${SLURM_GPU_MEMORY}" ] && [ "${SLURM_GPU_MEMORY}" != auto ]; then
+  GPU_MEMORY_ARGS+=(--mem="${SLURM_GPU_MEMORY}")
+fi
+FINALIZE_MEMORY_ARGS=()
+if [ -n "${SLURM_FINALIZE_MEMORY}" ] && [ "${SLURM_FINALIZE_MEMORY}" != auto ]; then
+  FINALIZE_MEMORY_ARGS+=(--mem="${SLURM_FINALIZE_MEMORY}")
+fi
+CPU_ACCOUNT_ARGS=()
+if [ -n "${SLURM_CPU_ACCOUNT}" ]; then CPU_ACCOUNT_ARGS+=(--account="${SLURM_CPU_ACCOUNT}"); fi
 
 GPU_COMMON=(
   --nodes=1
-  --ntasks=1
   --cpus-per-task="${SLURM_CPUS_PER_GPU}"
-  --mem="${SLURM_GPU_MEMORY}"
-  --gres="${SLURM_GPU_GRES}"
   --partition="${SLURM_PARTITION}"
+  "${GPU_REQUEST_ARGS[@]}"
+  "${GPU_MEMORY_ARGS[@]}"
   "${ACCOUNT_ARGS[@]}"
   "${QOS_ARGS[@]}"
   "${CONSTRAINT_ARGS[@]}"
@@ -88,7 +114,7 @@ GPU_COMMON=(
 
 echo "Submitting ${SPLIT_ID}: ${NUM_SOURCE} source tasks -> ${NUM_TARGET} targets / ${GRID_SIZE} Stage-B cells."
 echo "Evaluation=${EVAL_PROTOCOL_ID}; concurrency=${MAX_CONCURRENT}."
-echo "GPU partition=${SLURM_PARTITION} gres=${SLURM_GPU_GRES} memory=${SLURM_GPU_MEMORY}"
+echo "GPU partition=${SLURM_PARTITION} request_mode=${SLURM_GPU_REQUEST_MODE} CPUs/GPU=${SLURM_CPUS_PER_GPU}."
 
 STAGE_A_JOB_ID=$(sbatch --parsable \
   "${GPU_COMMON[@]}" \
@@ -112,12 +138,12 @@ STAGE_B_JOB_ID=$(sbatch --parsable \
   scripts/job_low_data_stage_b.sh)
 
 FINAL_JOB_ID=$(sbatch --parsable \
-  "${ACCOUNT_ARGS[@]}" \
+  "${CPU_ACCOUNT_ARGS[@]}" \
   "${QOS_ARGS[@]}" \
   --nodes=1 \
   --ntasks=1 \
   --cpus-per-task=4 \
-  --mem=16G \
+  "${FINALIZE_MEMORY_ARGS[@]}" \
   --partition="${SLURM_CPU_PARTITION}" \
   --job-name="ld_F_${SPLIT_ID}" \
   --time="${SLURM_FINALIZE_TIME}" \

@@ -93,11 +93,15 @@ ENV_FILE=${REPO_ROOT}/.cluster/low_data.env
   if [ -n "${SLURM_ACCOUNT:-}" ]; then printf 'export SLURM_ACCOUNT=%q\n' "${SLURM_ACCOUNT}"; fi
   if [ -n "${SLURM_PARTITION:-}" ]; then printf 'export SLURM_PARTITION=%q\n' "${SLURM_PARTITION}"; fi
   if [ -n "${SLURM_CPU_PARTITION:-}" ]; then printf 'export SLURM_CPU_PARTITION=%q\n' "${SLURM_CPU_PARTITION}"; fi
+  if [ -n "${SLURM_CPU_ACCOUNT:-}" ]; then printf 'export SLURM_CPU_ACCOUNT=%q\n' "${SLURM_CPU_ACCOUNT}"; fi
   if [ -n "${OPENPI_GPU_MODULES:-}" ]; then printf 'export OPENPI_GPU_MODULES=%q\n' "${OPENPI_GPU_MODULES}"; fi
   if [ -n "${OPENPI_SKIP_MODULES:-}" ]; then printf 'export OPENPI_SKIP_MODULES=%q\n' "${OPENPI_SKIP_MODULES}"; fi
   if [ -n "${SLURM_GPU_GRES:-}" ]; then printf 'export SLURM_GPU_GRES=%q\n' "${SLURM_GPU_GRES}"; fi
+  if [ -n "${SLURM_GPU_REQUEST_MODE:-}" ]; then printf 'export SLURM_GPU_REQUEST_MODE=%q\n' "${SLURM_GPU_REQUEST_MODE}"; fi
+  if [ -n "${SLURM_GPUS_PER_NODE:-}" ]; then printf 'export SLURM_GPUS_PER_NODE=%q\n' "${SLURM_GPUS_PER_NODE}"; fi
   if [ -n "${SLURM_CPUS_PER_GPU:-}" ]; then printf 'export SLURM_CPUS_PER_GPU=%q\n' "${SLURM_CPUS_PER_GPU}"; fi
   if [ -n "${SLURM_GPU_MEMORY:-}" ]; then printf 'export SLURM_GPU_MEMORY=%q\n' "${SLURM_GPU_MEMORY}"; fi
+  if [ -n "${SLURM_FINALIZE_MEMORY:-}" ]; then printf 'export SLURM_FINALIZE_MEMORY=%q\n' "${SLURM_FINALIZE_MEMORY}"; fi
 } > "${ENV_FILE}"
 
 echo "===== READY ====="

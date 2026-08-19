@@ -184,6 +184,9 @@ scripts/bootstrap_low_data_sofia.sh
 source .cluster/low_data.env
 ```
 
+The Sofia wrapper writes the site-specific resource profile: one H200, 24 CPU cores per GPU,
+automatic memory allocation, and a CPU-only finalizer on `zen5_vis` under account `vsc`.
+
 Any current 18-source/22-target split uses the same config-driven native-Slurm chain:
 
 ```bash

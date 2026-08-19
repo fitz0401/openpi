@@ -95,6 +95,11 @@ avoid anonymous shared-IP rate limits. The token remains in the user's home dire
 the group-readable project cache. `HF_HUB_DISABLE_XET=1` is enabled by the Sofia profile as a
 conservative fallback for Xet token-endpoint throttling.
 
+The Sofia profile also applies its site-mandated Slurm shape: one H200 through
+`--gpus-per-node=1`, one task per GPU, exactly 24 CPU cores per GPU, and no explicit memory request.
+The lightweight finalizer runs under account `vsc` on `zen5_vis`; GPU jobs use the project H200
+account on `zen4_h200`.
+
 Submit a complete Stage-A → Stage-B → finalizer chain by choosing one config:
 
 ```bash
