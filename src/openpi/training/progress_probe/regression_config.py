@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import pathlib
 
 from openpi.training.low_data.experiment import load_experiment_config
 from openpi.training.progress_probe.config import DatasetConfig
 from openpi.training.progress_probe.config import ModelConfig
+
+
+_LIBERO_DATA_ROOT_ENV = "OPENPI_LIBERO_DATA_ROOT"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -97,6 +101,10 @@ def load_regression_config(path: str | pathlib.Path) -> RegressionProbeConfig:
         resolved = pathlib.Path(value)
         return resolved if resolved.is_absolute() else (path.parent / resolved).resolve()
 
+    dataset = DatasetConfig(**raw.get("dataset", {}))
+    if dataset.root is None and (root_override := os.environ.get(_LIBERO_DATA_ROOT_ENV)):
+        dataset = dataclasses.replace(dataset, root=str(pathlib.Path(root_override).expanduser().resolve()))
+
     config = RegressionProbeConfig(
         schema_version=int(raw["schema_version"]),
         experiment_name=str(raw["experiment_name"]),
@@ -105,7 +113,7 @@ def load_regression_config(path: str | pathlib.Path) -> RegressionProbeConfig:
         target_suites=tuple(str(item) for item in raw["target_suites"]),
         split_config=resolve(raw["split_config"]),
         output_dir=resolve(raw["output_dir"]),
-        dataset=DatasetConfig(**raw.get("dataset", {})),
+        dataset=dataset,
         model=ModelConfig(**raw.get("model", {})),
         training=RegressionTrainingConfig(**raw["training"]),
         evaluation=RegressionEvaluationConfig(**raw.get("evaluation", {})),

@@ -13,6 +13,25 @@ At evaluation time the source-trained probe is frozen. Per-demonstration R² aga
 target demonstration progress is the primary compatibility score; MAE, Spearman rho, temporal
 pair accuracy, and wrong-language R² are diagnostics.
 
+## Local dataset location
+
+The maintained local launchers read the LIBERO LeRobot dataset from:
+
+```text
+/mnt/data/ze/datasets/lerobot/physical-intelligence/libero
+```
+
+Both training and evaluation pass this location through `OPENPI_LIBERO_DATA_ROOT`; the resolved
+probe config records the resulting absolute path. Generated Hugging Face Arrow data is also kept
+off the system disk at `/mnt/data/ze/cache/huggingface/datasets`. To use another machine or mount,
+override either location without editing the experiment configs:
+
+```bash
+OPENPI_LIBERO_DATA_ROOT=/path/to/physical-intelligence/libero \
+OPENPI_HF_DATASETS_CACHE=/path/to/huggingface/datasets \
+  GPU_INDEX=1 scripts/train_progress_regression_probe.sh "$CONFIG"
+```
+
 ## Source compositions
 
 The V3 matrix reuses the frozen Split-A manifest and includes:

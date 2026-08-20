@@ -143,3 +143,12 @@ def test_paper_v3_configs(name, source_count, target_count) -> None:
     assert config.schema_version == 3
     assert len(config.source_refs()) == source_count
     assert len(config.target_refs()) == target_count
+
+
+def test_dataset_root_can_be_supplied_by_environment(tmp_path: pathlib.Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENPI_LIBERO_DATA_ROOT", str(tmp_path / "../dataset"))
+    repo_root = pathlib.Path(__file__).parents[4]
+    config = load_regression_config(
+        repo_root / "examples/progress_probe/configs/progress_regression_v3_smoke.json"
+    )
+    assert config.dataset.root == str((tmp_path / "../dataset").resolve())
