@@ -42,6 +42,11 @@ DATA_BUDGET=${DATA_BUDGET:?Set DATA_BUDGET to 1, 5, 10, 25, or all_available}
 SEED=${SEED:-0}
 DELETE_TARGET_CHECKPOINT=${DELETE_TARGET_CHECKPOINT:-1}
 DELETE_TARGET_CHECKPOINT_ON_FAILURE=${DELETE_TARGET_CHECKPOINT_ON_FAILURE:-1}
+EVAL_MAX_ATTEMPTS=${EVAL_MAX_ATTEMPTS:-3}
+if ! [[ "${EVAL_MAX_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EVAL_MAX_ATTEMPTS must be a positive integer; got ${EVAL_MAX_ATTEMPTS}" >&2
+  exit 2
+fi
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 JOB_TOKEN="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}_${ARRAY_INDEX:-0}"
 JOB_TOKEN=${JOB_TOKEN//[!a-zA-Z0-9_.-]/_}
@@ -138,11 +143,9 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export MUJOCO_GL=${MUJOCO_GL:-egl}
 export PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM:-egl}
 export PYTHONFAULTHANDLER=${PYTHONFAULTHANDLER:-1}
-# CUDA_VISIBLE_DEVICES is remapped to local device 0 by Slurm, while EGL still enumerates the
-# physical devices on the whole node. Bind MuJoCo to the physical GPU assigned to this job.
-if [ -z "${MUJOCO_EGL_DEVICE_ID:-}" ] && [[ "${SLURM_JOB_GPUS:-}" =~ ^[0-9]+$ ]]; then
-  export MUJOCO_EGL_DEVICE_ID="${SLURM_JOB_GPUS}"
-fi
+# Do not derive MUJOCO_EGL_DEVICE_ID from SLURM_JOB_GPUS. NVIDIA's EGL device ordering is not
+# guaranteed to match Slurm's physical GPU numbering. With no explicit override MuJoCo probes
+# the EGL devices and selects the one made accessible by the job's device cgroup.
 export NUMBA_CACHE_DIR=${NUMBA_CACHE_DIR:-${JOB_TMPDIR}/numba}
 export LIBERO_CONFIG_PATH=${LIBERO_CONFIG_PATH:-${JOB_TMPDIR}/libero}
 mkdir -p "${NUMBA_CACHE_DIR}" "${LIBERO_CONFIG_PATH}"
@@ -163,7 +166,7 @@ config_file.write_text(json.dumps({
 PY
 
 echo "===== LOW-DATA STAGE B ====="
-echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_SUITE}:${TARGET_TASK_ID} METHOD=${METHOD} DATA_BUDGET=${DATA_BUDGET} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT}"
+echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_SUITE}:${TARGET_TASK_ID} METHOD=${METHOD} DATA_BUDGET=${DATA_BUDGET} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT} EVAL_MAX_ATTEMPTS=${EVAL_MAX_ATTEMPTS}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID:-auto}"
 df -h "${REPO_ROOT}" "${JOB_TMPDIR}" || true
 nvidia-smi
@@ -205,10 +208,35 @@ if [ "${DELETE_TARGET_CHECKPOINT}" = 1 ]; then
 fi
 source "${LIBERO_VENV}/bin/activate"
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}/third_party/libero:${PYTHONPATH:-}"
-python scripts/low_data_eval.py \
-  --experiment-config "${EXPERIMENT_CONFIG}" \
-  --train-manifest "${DESCRIPTOR}" \
-  --repo-root "${REPO_ROOT}" \
-  --port "${PORT}" \
-  --server-gpu 0 \
-  "${DELETE_ARGS[@]}"
+
+cleanup_orphaned_policy_server() {
+  # A native MuJoCo/EGL abort bypasses Python's context-manager cleanup and can leave the policy
+  # server alive. The port is unique to this array cell, so this pattern cannot affect peers.
+  pkill -TERM -f "[s]cripts/serve_policy.py --port ${PORT}" 2>/dev/null || true
+  sleep 2
+  pkill -KILL -f "[s]cripts/serve_policy.py --port ${PORT}" 2>/dev/null || true
+}
+
+eval_status=1
+for ((attempt = 1; attempt <= EVAL_MAX_ATTEMPTS; attempt++)); do
+  echo "Starting evaluation attempt ${attempt}/${EVAL_MAX_ATTEMPTS}"
+  if python scripts/low_data_eval.py \
+    --experiment-config "${EXPERIMENT_CONFIG}" \
+    --train-manifest "${DESCRIPTOR}" \
+    --repo-root "${REPO_ROOT}" \
+    --port "${PORT}" \
+    --server-gpu 0 \
+    "${DELETE_ARGS[@]}"; then
+    eval_status=0
+    break
+  else
+    eval_status=$?
+  fi
+  echo "Evaluation attempt ${attempt} failed with status ${eval_status}" >&2
+  cleanup_orphaned_policy_server
+done
+
+if [ "${eval_status}" -ne 0 ]; then
+  echo "Evaluation failed after ${EVAL_MAX_ATTEMPTS} attempts" >&2
+  exit "${eval_status}"
+fi

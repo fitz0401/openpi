@@ -68,11 +68,9 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export MUJOCO_GL=${MUJOCO_GL:-egl}
 export PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM:-egl}
 export PYTHONFAULTHANDLER=${PYTHONFAULTHANDLER:-1}
-# CUDA_VISIBLE_DEVICES is remapped to local device 0 by Slurm, while EGL still enumerates the
-# physical devices on the whole node. Bind MuJoCo to the physical GPU assigned to this job.
-if [ -z "${MUJOCO_EGL_DEVICE_ID:-}" ] && [[ "${SLURM_JOB_GPUS:-}" =~ ^[0-9]+$ ]]; then
-  export MUJOCO_EGL_DEVICE_ID="${SLURM_JOB_GPUS}"
-fi
+# Do not derive MUJOCO_EGL_DEVICE_ID from SLURM_JOB_GPUS. NVIDIA's EGL device ordering is not
+# guaranteed to match Slurm's physical GPU numbering. With no explicit override MuJoCo probes
+# the EGL devices and selects the one made accessible by the job's device cgroup.
 export NUMBA_CACHE_DIR=${NUMBA_CACHE_DIR:-${JOB_TMPDIR}/numba}
 export LIBERO_CONFIG_PATH=${LIBERO_CONFIG_PATH:-${JOB_TMPDIR}/libero}
 mkdir -p "${NUMBA_CACHE_DIR}" "${LIBERO_CONFIG_PATH}"
