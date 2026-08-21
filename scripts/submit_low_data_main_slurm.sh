@@ -9,6 +9,7 @@ EXPERIMENT_CONFIG=$(realpath "${EXPERIMENT_CONFIG}")
 OPENPI_CACHE_ROOT=${OPENPI_CACHE_ROOT:-${SCRATCH:-${HOME}/.cache}/openpi_low_data_cache}
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 MAX_CONCURRENT=${MAX_CONCURRENT:-8}
+STAGE_B_ARRAY_INDICES=${STAGE_B_ARRAY_INDICES:-}
 
 SLURM_PARTITION=${SLURM_PARTITION:?Set SLURM_PARTITION for GPU jobs}
 SLURM_CPU_PARTITION=${SLURM_CPU_PARTITION:-${SLURM_PARTITION}}
@@ -112,9 +113,29 @@ GPU_COMMON=(
   "${CONSTRAINT_ARGS[@]}"
 )
 
+if [ -n "${STAGE_B_ARRAY_INDICES}" ]; then
+  if ! [[ "${STAGE_B_ARRAY_INDICES}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+    echo "STAGE_B_ARRAY_INDICES must be a comma-separated list of non-negative integers." >&2
+    exit 2
+  fi
+  IFS=',' read -r -a SELECTED_STAGE_B_INDICES <<< "${STAGE_B_ARRAY_INDICES}"
+  for index in "${SELECTED_STAGE_B_INDICES[@]}"; do
+    if [ "${index}" -ge "${GRID_SIZE}" ]; then
+      echo "Stage-B array index ${index} is outside the grid [0, $((GRID_SIZE - 1))]." >&2
+      exit 2
+    fi
+  done
+  ARRAY_RANGE="${STAGE_B_ARRAY_INDICES}%${MAX_CONCURRENT}"
+  SUBMITTED_STAGE_B_CELLS=${#SELECTED_STAGE_B_INDICES[@]}
+else
+  ARRAY_RANGE="0-$((GRID_SIZE - 1))%${MAX_CONCURRENT}"
+  SUBMITTED_STAGE_B_CELLS=${GRID_SIZE}
+fi
+
 echo "Submitting ${SPLIT_ID}: ${NUM_SOURCE} source tasks -> ${NUM_TARGET} targets / ${GRID_SIZE} Stage-B cells."
 echo "Evaluation=${EVAL_PROTOCOL_ID}; concurrency=${MAX_CONCURRENT}."
 echo "GPU partition=${SLURM_PARTITION} request_mode=${SLURM_GPU_REQUEST_MODE} CPUs/GPU=${SLURM_CPUS_PER_GPU}."
+echo "Stage-B submission contains ${SUBMITTED_STAGE_B_CELLS} cells: ${ARRAY_RANGE}."
 
 STAGE_A_JOB_ID=$(sbatch --parsable \
   "${GPU_COMMON[@]}" \
@@ -125,7 +146,6 @@ STAGE_A_JOB_ID=$(sbatch --parsable \
   --export="ALL,EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG}" \
   --wrap="exec ${REPO_ROOT}/scripts/job_low_data_stage_a.sh")
 
-ARRAY_RANGE="0-$((GRID_SIZE - 1))%${MAX_CONCURRENT}"
 STAGE_B_JOB_ID=$(sbatch --parsable \
   "${GPU_COMMON[@]}" \
   --job-name="ld_B_${SPLIT_ID}" \
@@ -157,7 +177,7 @@ mkdir -p "${RESULTS_DIR}"
 uv run python - "${RESULTS_DIR}/submission_manifest.json" "${EXPERIMENT_CONFIG}" \
   "${STAGE_A_JOB_ID}" "${STAGE_B_JOB_ID}" "${FINAL_JOB_ID}" "${ARRAY_RANGE}" \
   "${GRID_SIZE}" "${MAX_CONCURRENT}" "${SLURM_PARTITION}" "${SLURM_ACCOUNT:-}" \
-  "${SLURM_STAGE_A_TIME}" "${SLURM_STAGE_B_TIME}" <<'PY'
+  "${SLURM_STAGE_A_TIME}" "${SLURM_STAGE_B_TIME}" "${SUBMITTED_STAGE_B_CELLS}" <<'PY'
 import datetime
 import json
 import pathlib
@@ -181,6 +201,7 @@ path.write_text(
             "finalize_job_id": sys.argv[5],
             "stage_b_array_range": sys.argv[6],
             "stage_b_grid_size": int(sys.argv[7]),
+            "submitted_stage_b_cells": int(sys.argv[13]),
             "evaluation_protocol": config.evaluation.protocol_manifest(),
             "evaluation_workload": evaluation_workload(config),
             "max_concurrent": int(sys.argv[8]),

@@ -68,6 +68,11 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 export MUJOCO_GL=${MUJOCO_GL:-egl}
 export PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM:-egl}
 export PYTHONFAULTHANDLER=${PYTHONFAULTHANDLER:-1}
+# CUDA_VISIBLE_DEVICES is remapped to local device 0 by Slurm, while EGL still enumerates the
+# physical devices on the whole node. Bind MuJoCo to the physical GPU assigned to this job.
+if [ -z "${MUJOCO_EGL_DEVICE_ID:-}" ] && [[ "${SLURM_JOB_GPUS:-}" =~ ^[0-9]+$ ]]; then
+  export MUJOCO_EGL_DEVICE_ID="${SLURM_JOB_GPUS}"
+fi
 export NUMBA_CACHE_DIR=${NUMBA_CACHE_DIR:-${JOB_TMPDIR}/numba}
 export LIBERO_CONFIG_PATH=${LIBERO_CONFIG_PATH:-${JOB_TMPDIR}/libero}
 mkdir -p "${NUMBA_CACHE_DIR}" "${LIBERO_CONFIG_PATH}"
@@ -89,6 +94,7 @@ PY
 
 echo "===== LOW-DATA STAGE A ====="
 echo "EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG} DESCRIPTOR=${DESCRIPTOR}"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID:-auto}"
 df -h "${REPO_ROOT}" "${JOB_TMPDIR}" || true
 nvidia-smi
 
