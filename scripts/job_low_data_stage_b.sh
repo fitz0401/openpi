@@ -52,6 +52,11 @@ if ! [[ "${EVAL_MAX_CONCURRENT_PER_NODE}" =~ ^[1-9][0-9]*$ ]]; then
   echo "EVAL_MAX_CONCURRENT_PER_NODE must be a positive integer; got ${EVAL_MAX_CONCURRENT_PER_NODE}" >&2
   exit 2
 fi
+EVAL_MUJOCO_EGL_DEVICE_ID=${EVAL_MUJOCO_EGL_DEVICE_ID:-}
+if [ -n "${EVAL_MUJOCO_EGL_DEVICE_ID}" ] && ! [[ "${EVAL_MUJOCO_EGL_DEVICE_ID}" =~ ^[0-9]+$ ]]; then
+  echo "EVAL_MUJOCO_EGL_DEVICE_ID must be an unsigned integer; got ${EVAL_MUJOCO_EGL_DEVICE_ID}" >&2
+  exit 2
+fi
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 JOB_TOKEN="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}_${ARRAY_INDEX:-0}"
 JOB_TOKEN=${JOB_TOKEN//[!a-zA-Z0-9_.-]/_}
@@ -211,6 +216,18 @@ DELETE_ARGS=()
 if [ "${DELETE_TARGET_CHECKPOINT}" = 1 ]; then
   DELETE_ARGS+=(--delete-checkpoint-after-eval)
 fi
+# An optional evaluation-only EGL override can select a slower non-CUDA fallback without exposing
+# that pseudo-device to JAX during training. The policy-server subprocess resets CUDA visibility to
+# ``--server-gpu 0``; only the LIBERO simulator client sees the appended EGL device identifier.
+if [ -n "${EVAL_MUJOCO_EGL_DEVICE_ID}" ]; then
+  export MUJOCO_EGL_DEVICE_ID="${EVAL_MUJOCO_EGL_DEVICE_ID}"
+  case ",${CUDA_VISIBLE_DEVICES}," in
+    *,"${EVAL_MUJOCO_EGL_DEVICE_ID}",*) ;;
+    *) export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES},${EVAL_MUJOCO_EGL_DEVICE_ID}" ;;
+  esac
+  echo "Using evaluation-only EGL fallback device ${MUJOCO_EGL_DEVICE_ID}"
+fi
+
 source "${LIBERO_VENV}/bin/activate"
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}/third_party/libero:${PYTHONPATH:-}"
 
