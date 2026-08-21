@@ -47,6 +47,11 @@ if ! [[ "${EVAL_MAX_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "EVAL_MAX_ATTEMPTS must be a positive integer; got ${EVAL_MAX_ATTEMPTS}" >&2
   exit 2
 fi
+EVAL_MAX_CONCURRENT_PER_NODE=${EVAL_MAX_CONCURRENT_PER_NODE:-4}
+if ! [[ "${EVAL_MAX_CONCURRENT_PER_NODE}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EVAL_MAX_CONCURRENT_PER_NODE must be a positive integer; got ${EVAL_MAX_CONCURRENT_PER_NODE}" >&2
+  exit 2
+fi
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 JOB_TOKEN="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}_${ARRAY_INDEX:-0}"
 JOB_TOKEN=${JOB_TOKEN//[!a-zA-Z0-9_.-]/_}
@@ -166,7 +171,7 @@ config_file.write_text(json.dumps({
 PY
 
 echo "===== LOW-DATA STAGE B ====="
-echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_SUITE}:${TARGET_TASK_ID} METHOD=${METHOD} DATA_BUDGET=${DATA_BUDGET} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT} EVAL_MAX_ATTEMPTS=${EVAL_MAX_ATTEMPTS}"
+echo "CONFIG=${EXPERIMENT_CONFIG} TARGET=${TARGET_SUITE}:${TARGET_TASK_ID} METHOD=${METHOD} DATA_BUDGET=${DATA_BUDGET} SEED=${SEED} PORT=${PORT} DELETE=${DELETE_TARGET_CHECKPOINT} EVAL_MAX_ATTEMPTS=${EVAL_MAX_ATTEMPTS} EVAL_MAX_CONCURRENT_PER_NODE=${EVAL_MAX_CONCURRENT_PER_NODE}"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} MUJOCO_EGL_DEVICE_ID=${MUJOCO_EGL_DEVICE_ID:-auto}"
 df -h "${REPO_ROOT}" "${JOB_TMPDIR}" || true
 nvidia-smi
@@ -209,6 +214,29 @@ fi
 source "${LIBERO_VENV}/bin/activate"
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}/third_party/libero:${PYTHONPATH:-}"
 
+acquire_eval_slot() {
+  # Sofia H200 nodes are stable with several independent trainers, but too many simultaneous EGL
+  # readbacks can abort inside the NVIDIA driver. Keep training parallel while bounding only the
+  # rendering phase. /tmp is node-local, so the semaphore is independent on every allocated node.
+  local lock_dir="/tmp/${USER}/openpi_low_data_eval_locks"
+  local candidate_fd slot
+  mkdir -p "${lock_dir}"
+  while true; do
+    for ((slot = 0; slot < EVAL_MAX_CONCURRENT_PER_NODE; slot++)); do
+      exec {candidate_fd}>"${lock_dir}/slot${slot}.lock"
+      if flock -n "${candidate_fd}"; then
+        EVAL_LOCK_FD=${candidate_fd}
+        EVAL_LOCK_SLOT=${slot}
+        echo "Acquired node-local evaluation slot ${slot}/${EVAL_MAX_CONCURRENT_PER_NODE}"
+        return
+      fi
+      exec {candidate_fd}>&-
+    done
+    echo "Waiting for a node-local evaluation slot (${EVAL_MAX_CONCURRENT_PER_NODE} allowed)"
+    sleep 5
+  done
+}
+
 cleanup_orphaned_policy_server() {
   # A native MuJoCo/EGL abort bypasses Python's context-manager cleanup and can leave the policy
   # server alive. The port is unique to this array cell, so this pattern cannot affect peers.
@@ -218,6 +246,7 @@ cleanup_orphaned_policy_server() {
 }
 
 eval_status=1
+acquire_eval_slot
 for ((attempt = 1; attempt <= EVAL_MAX_ATTEMPTS; attempt++)); do
   echo "Starting evaluation attempt ${attempt}/${EVAL_MAX_ATTEMPTS}"
   if python scripts/low_data_eval.py \
