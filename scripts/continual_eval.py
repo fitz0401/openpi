@@ -69,6 +69,10 @@ class Args:
     max_steps: int = 280  # libero_object longest demo ~254
     num_steps_wait: int = 10
     replan_steps: int = 5
+    # Bound the lifetime of one offscreen EGL context. Long-lived MuJoCo contexts can abort in
+    # ``mjr_readPixels`` on some multi-GPU cluster drivers; recreating the environment preserves
+    # the rollout initial-state order and policy while avoiding that native-driver failure.
+    env_recreate_interval: int = 10
     resize_size: int = 224
 
     # Optional pretrained baseline (stage 0) to enable forward-transfer. If both are set, this
@@ -167,48 +171,64 @@ def eval_task(client, task_suite, task_id: int, args: Args, num_trials: int) -> 
     """Run `num_trials` rollouts of one LIBERO task; return success rate."""
     task = task_suite.get_task(task_id)
     initial_states = task_suite.get_task_init_states(task_id)
-    env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
+    task_description = task.language
+    if args.env_recreate_interval <= 0:
+        raise ValueError("env_recreate_interval must be positive.")
 
     successes = 0
-    for episode_idx in range(num_trials):
-        env.reset()
-        action_plan = collections.deque()
-        obs = env.set_init_state(initial_states[episode_idx % len(initial_states)])
-        t = 0
-        done = False
-        while t < args.max_steps + args.num_steps_wait:
-            try:
-                if t < args.num_steps_wait:
-                    obs, _, done, _ = env.step(LIBERO_DUMMY_ACTION)
+    env = None
+    try:
+        for episode_idx in range(num_trials):
+            if episode_idx % args.env_recreate_interval == 0:
+                if env is not None:
+                    env.close()
+                env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
+            env.reset()
+            action_plan = collections.deque()
+            obs = env.set_init_state(initial_states[episode_idx % len(initial_states)])
+            t = 0
+            done = False
+            while t < args.max_steps + args.num_steps_wait:
+                try:
+                    if t < args.num_steps_wait:
+                        obs, _, done, _ = env.step(LIBERO_DUMMY_ACTION)
+                        t += 1
+                        continue
+                    img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                    wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                    img = image_tools.convert_to_uint8(
+                        image_tools.resize_with_pad(img, args.resize_size, args.resize_size)
+                    )
+                    wrist_img = image_tools.convert_to_uint8(
+                        image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
+                    )
+                    if not action_plan:
+                        element = {
+                            "observation/image": img,
+                            "observation/wrist_image": wrist_img,
+                            "observation/state": np.concatenate(
+                                (
+                                    obs["robot0_eef_pos"],
+                                    _quat2axisangle(obs["robot0_eef_quat"]),
+                                    obs["robot0_gripper_qpos"],
+                                )
+                            ),
+                            "prompt": str(task_description),
+                        }
+                        action_chunk = client.infer(element)["actions"]
+                        action_plan.extend(action_chunk[: args.replan_steps])
+                    action = action_plan.popleft()
+                    obs, _, done, _ = env.step(action.tolist())
+                    if done:
+                        successes += 1
+                        break
                     t += 1
-                    continue
-                img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
-                img = image_tools.convert_to_uint8(image_tools.resize_with_pad(img, args.resize_size, args.resize_size))
-                wrist_img = image_tools.convert_to_uint8(
-                    image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
-                )
-                if not action_plan:
-                    element = {
-                        "observation/image": img,
-                        "observation/wrist_image": wrist_img,
-                        "observation/state": np.concatenate(
-                            (obs["robot0_eef_pos"], _quat2axisangle(obs["robot0_eef_quat"]), obs["robot0_gripper_qpos"])
-                        ),
-                        "prompt": str(task_description),
-                    }
-                    action_chunk = client.infer(element)["actions"]
-                    action_plan.extend(action_chunk[: args.replan_steps])
-                action = action_plan.popleft()
-                obs, _, done, _ = env.step(action.tolist())
-                if done:
-                    successes += 1
+                except Exception as e:  # noqa: BLE001
+                    logging.error("Rollout exception (task %d, ep %d): %s", task_id, episode_idx, e)
                     break
-                t += 1
-            except Exception as e:  # noqa: BLE001
-                logging.error("Rollout exception (task %d, ep %d): %s", task_id, episode_idx, e)
-                break
-    env.close()
+    finally:
+        if env is not None:
+            env.close()
     sr = successes / max(num_trials, 1)
     logging.info("Task %d (%s): SR = %d/%d = %.3f", task_id, task_description, successes, num_trials, sr)
     return sr
