@@ -27,6 +27,11 @@ if [ -n "${CLUSTER}" ]; then
   load_low_data_cluster_profile "${CLUSTER}"
 fi
 
+if [ "${OPENPI_SKIP_MODULES:-0}" != 1 ] && [ -n "${OPENPI_BOOTSTRAP_MODULES:-}" ]; then
+  read -r -a OPENPI_BOOTSTRAP_MODULE_LIST <<< "${OPENPI_BOOTSTRAP_MODULES}"
+  module load "${OPENPI_BOOTSTRAP_MODULE_LIST[@]}"
+fi
+
 REPO_ROOT=${OPENPI_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 DEFAULT_CACHE_PARENT=${SCRATCH:-${HOME}/.cache}
 OPENPI_CACHE_ROOT=${OPENPI_CACHE_ROOT:-${DEFAULT_CACHE_PARENT}/openpi_low_data_cache}
@@ -98,7 +103,12 @@ if [ "${OPENPI_SKIP_RERUN_SDK:-0}" = 1 ]; then
   # omitted, unused visualization dependency.
   export UV_NO_SYNC=1
 fi
-GIT_LFS_SKIP_SMUDGE=1 uv sync "${SYNC_ARGS[@]}"
+if [ -n "${OPENPI_PROJECT_PYTHON:-}" ]; then
+  PROJECT_PYTHON=${OPENPI_PROJECT_PYTHON}
+else
+  PROJECT_PYTHON=$(command -v python3)
+fi
+GIT_LFS_SKIP_SMUDGE=1 uv sync --python "${PROJECT_PYTHON}" "${SYNC_ARGS[@]}"
 GIT_LFS_SKIP_SMUDGE=1 uv pip install --no-deps -e .
 
 echo "===== LIBERO CLIENT ENVIRONMENT ====="
@@ -164,6 +174,7 @@ ENV_FILE=${REPO_ROOT}/.cluster/low_data.env
   if [ -n "${SLURM_CPU_ACCOUNT:-}" ]; then printf 'export SLURM_CPU_ACCOUNT=%q\n' "${SLURM_CPU_ACCOUNT}"; fi
   if [ -n "${SLURM_QOS:-}" ]; then printf 'export SLURM_QOS=%q\n' "${SLURM_QOS}"; fi
   if [ -n "${OPENPI_GPU_MODULES:-}" ]; then printf 'export OPENPI_GPU_MODULES=%q\n' "${OPENPI_GPU_MODULES}"; fi
+  if [ -n "${OPENPI_BOOTSTRAP_MODULES:-}" ]; then printf 'export OPENPI_BOOTSTRAP_MODULES=%q\n' "${OPENPI_BOOTSTRAP_MODULES}"; fi
   if [ -n "${OPENPI_SKIP_MODULES:-}" ]; then printf 'export OPENPI_SKIP_MODULES=%q\n' "${OPENPI_SKIP_MODULES}"; fi
   if [ -n "${SLURM_GPU_GRES:-}" ]; then printf 'export SLURM_GPU_GRES=%q\n' "${SLURM_GPU_GRES}"; fi
   if [ -n "${SLURM_GPU_REQUEST_MODE:-}" ]; then printf 'export SLURM_GPU_REQUEST_MODE=%q\n' "${SLURM_GPU_REQUEST_MODE}"; fi
