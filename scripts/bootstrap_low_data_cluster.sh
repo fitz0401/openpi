@@ -3,6 +3,30 @@
 
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+CLUSTER=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --cluster)
+      CLUSTER=${2:?--cluster requires sofia or leonardo}
+      shift 2
+      ;;
+    -h|--help)
+      echo "Usage: $0 [--cluster sofia|leonardo]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+if [ -n "${CLUSTER}" ]; then
+  # shellcheck source=scripts/low_data_cluster_profiles.sh
+  source "${SCRIPT_DIR}/low_data_cluster_profiles.sh"
+  load_low_data_cluster_profile "${CLUSTER}"
+fi
+
 REPO_ROOT=${OPENPI_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 DEFAULT_CACHE_PARENT=${SCRATCH:-${HOME}/.cache}
 OPENPI_CACHE_ROOT=${OPENPI_CACHE_ROOT:-${DEFAULT_CACHE_PARENT}/openpi_low_data_cache}
@@ -17,13 +41,44 @@ for value in "${REPO_ROOT}" "${OPENPI_CACHE_ROOT}" "${LIBERO_VENV}"; do
   fi
 done
 
+if ! command -v uv >/dev/null 2>&1 && [ "${OPENPI_INSTALL_UV:-0}" = 1 ]; then
+  UV_INSTALL_DIR=${UV_INSTALL_DIR:-${OPENPI_CACHE_ROOT}/tools/bin}
+  mkdir -p "${UV_INSTALL_DIR}"
+  echo "===== UV ====="
+  echo "Installing uv into ${UV_INSTALL_DIR}"
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="${UV_INSTALL_DIR}" sh
+  export PATH="${UV_INSTALL_DIR}:${PATH}"
+fi
 if ! command -v uv >/dev/null 2>&1; then
-  echo "uv is required. Install it first: https://docs.astral.sh/uv/getting-started/installation/" >&2
+  echo "uv is required. Re-run with OPENPI_INSTALL_UV=1 or install it first." >&2
   exit 2
 fi
 
 cd "${REPO_ROOT}"
 mkdir -p "${OPENPI_CACHE_ROOT}/huggingface" "${OPENPI_CACHE_ROOT}/openpi" .cluster
+if [ -n "${OPENPI_STORAGE_ROOT:-}" ]; then
+  mkdir -p "${OPENPI_STORAGE_ROOT}/checkpoints" "${OPENPI_STORAGE_ROOT}/results" \
+    "${OPENPI_JOB_TMP_ROOT:-${OPENPI_STORAGE_ROOT}/job_tmp}"
+  for name in checkpoints results; do
+    destination="${OPENPI_STORAGE_ROOT}/${name}"
+    if [ -L "${REPO_ROOT}/${name}" ]; then
+      current=$(readlink -f "${REPO_ROOT}/${name}")
+      if [ "${current}" != "$(readlink -f "${destination}")" ]; then
+        echo "${REPO_ROOT}/${name} points to ${current}, expected ${destination}" >&2
+        exit 2
+      fi
+    elif [ -e "${REPO_ROOT}/${name}" ]; then
+      if [ -n "$(find "${REPO_ROOT}/${name}" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        echo "Refusing to replace non-empty ${REPO_ROOT}/${name}; move it manually first." >&2
+        exit 2
+      fi
+      rmdir "${REPO_ROOT}/${name}"
+      ln -s "${destination}" "${REPO_ROOT}/${name}"
+    else
+      ln -s "${destination}" "${REPO_ROOT}/${name}"
+    fi
+  done
+fi
 
 export OPENPI_REPO_ROOT="${REPO_ROOT}"
 export OPENPI_CACHE_ROOT
@@ -90,10 +145,15 @@ ENV_FILE=${REPO_ROOT}/.cluster/low_data.env
   printf 'export HF_HUB_DISABLE_XET=%q\n' "${HF_HUB_DISABLE_XET}"
   printf 'export OPENPI_DATA_HOME=%q\n' "${OPENPI_DATA_HOME}"
   printf 'export LIBERO_VENV=%q\n' "${LIBERO_VENV}"
+  if [ -n "${OPENPI_CLUSTER:-}" ]; then printf 'export OPENPI_CLUSTER=%q\n' "${OPENPI_CLUSTER}"; fi
+  if [ -n "${OPENPI_STORAGE_ROOT:-}" ]; then printf 'export OPENPI_STORAGE_ROOT=%q\n' "${OPENPI_STORAGE_ROOT}"; fi
+  if [ -n "${OPENPI_JOB_TMP_ROOT:-}" ]; then printf 'export OPENPI_JOB_TMP_ROOT=%q\n' "${OPENPI_JOB_TMP_ROOT}"; fi
+  printf 'export PATH=%q\n' "${PATH}"
   if [ -n "${SLURM_ACCOUNT:-}" ]; then printf 'export SLURM_ACCOUNT=%q\n' "${SLURM_ACCOUNT}"; fi
   if [ -n "${SLURM_PARTITION:-}" ]; then printf 'export SLURM_PARTITION=%q\n' "${SLURM_PARTITION}"; fi
   if [ -n "${SLURM_CPU_PARTITION:-}" ]; then printf 'export SLURM_CPU_PARTITION=%q\n' "${SLURM_CPU_PARTITION}"; fi
   if [ -n "${SLURM_CPU_ACCOUNT:-}" ]; then printf 'export SLURM_CPU_ACCOUNT=%q\n' "${SLURM_CPU_ACCOUNT}"; fi
+  if [ -n "${SLURM_QOS:-}" ]; then printf 'export SLURM_QOS=%q\n' "${SLURM_QOS}"; fi
   if [ -n "${OPENPI_GPU_MODULES:-}" ]; then printf 'export OPENPI_GPU_MODULES=%q\n' "${OPENPI_GPU_MODULES}"; fi
   if [ -n "${OPENPI_SKIP_MODULES:-}" ]; then printf 'export OPENPI_SKIP_MODULES=%q\n' "${OPENPI_SKIP_MODULES}"; fi
   if [ -n "${SLURM_GPU_GRES:-}" ]; then printf 'export SLURM_GPU_GRES=%q\n' "${SLURM_GPU_GRES}"; fi
@@ -102,6 +162,8 @@ ENV_FILE=${REPO_ROOT}/.cluster/low_data.env
   if [ -n "${SLURM_CPUS_PER_GPU:-}" ]; then printf 'export SLURM_CPUS_PER_GPU=%q\n' "${SLURM_CPUS_PER_GPU}"; fi
   if [ -n "${SLURM_GPU_MEMORY:-}" ]; then printf 'export SLURM_GPU_MEMORY=%q\n' "${SLURM_GPU_MEMORY}"; fi
   if [ -n "${SLURM_FINALIZE_MEMORY:-}" ]; then printf 'export SLURM_FINALIZE_MEMORY=%q\n' "${SLURM_FINALIZE_MEMORY}"; fi
+  if [ -n "${SLURM_STAGE_A_TIME:-}" ]; then printf 'export SLURM_STAGE_A_TIME=%q\n' "${SLURM_STAGE_A_TIME}"; fi
+  if [ -n "${SLURM_STAGE_B_TIME:-}" ]; then printf 'export SLURM_STAGE_B_TIME=%q\n' "${SLURM_STAGE_B_TIME}"; fi
 } > "${ENV_FILE}"
 
 echo "===== READY ====="

@@ -64,6 +64,12 @@ All three configs use 4,500 Stage-A optimizer steps and produce one immutable 18
 Changing experiments requires selecting a different config; orchestration derives the task
 manifest, 206-cell grid, output namespace, and evaluation workload from that file.
 
+### Native-Slurm cluster profiles
+
+The bootstrap and submission entry points accept `--cluster sofia|leonardo`. Site profiles only
+define storage, modules, accounts, partitions, GPU request shape, and walltime limits; the selected
+experiment JSON remains the scientific protocol.
+
 ### Sofia: setup and one-command Stage A + Stage B
 
 Sofia uses project `/sofia/projects/2026_start_025`, account
@@ -84,7 +90,7 @@ export HF_HOME=/sofia/projects/2026_start_025/cache/openpi_low_data_cache/huggin
 export HF_TOKEN_PATH="$HOME/.cache/huggingface/token"
 uv run huggingface-cli login
 
-scripts/bootstrap_low_data_sofia.sh
+scripts/bootstrap_low_data_cluster.sh --cluster sofia
 source .cluster/low_data.env
 ```
 
@@ -105,7 +111,7 @@ Submit a complete Stage-A → Stage-B → finalizer chain by choosing one config
 ```bash
 source .cluster/low_data.env
 
-MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh \
+MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh --cluster sofia \
   examples/low_data/configs/libero_split_b_18source_22target.json
 ```
 
@@ -113,6 +119,54 @@ Replace only the config path to run Split A or C. Defaults are eight concurrent 
 cells, 48 hours for Stage A, 12 hours per Stage-B cell, and two hours for finalization. Logs are
 written to `job_record/`; checkpoints and results use the roots and `split_id` declared by the
 selected config.
+
+### Leonardo: setup and Split-A rerun
+
+Leonardo uses project `EUHPC_D35_005`, GPU partition `boost_usr_prod`, normal QoS, and one A100 GPU
+with eight CPU cores per independent job. Code lives under the persistent work filesystem while
+large/high-I/O artifacts live under fast scratch:
+
+```text
+/leonardo_work/EUHPC_D35_005/ze/openpi                  # repository and Python environments
+/leonardo_scratch/fast/EUHPC_D35_005/ze/cache           # dataset and pretrained checkpoint cache
+/leonardo_scratch/fast/EUHPC_D35_005/ze/checkpoints     # Stage-A checkpoint
+/leonardo_scratch/fast/EUHPC_D35_005/ze/results         # evaluation results
+/leonardo_scratch/fast/EUHPC_D35_005/ze/job_tmp         # transient target checkpoints
+```
+
+The Booster node-local `/tmp` is only 10 GB, so the Leonardo profile deliberately stages transient
+target checkpoints in `$FAST/ze/job_tmp`. Stage A is capped at Leonardo's 24-hour production limit;
+Stage-B cells retain the formal 12-hour limit. Bootstrap is idempotent and installs `uv` into the
+shared cache if needed.
+
+After obtaining the temporary CINECA SSH certificate, initialize the environment in two phases so
+the public LIBERO download uses an authenticated Hugging Face token:
+
+```bash
+ssh zfu00000@login.leonardo.cineca.it
+cd /leonardo_work/EUHPC_D35_005/ze/openpi
+
+PREFETCH_DATASET=0 scripts/bootstrap_low_data_cluster.sh --cluster leonardo
+source .cluster/low_data.env
+uv run huggingface-cli login
+scripts/bootstrap_low_data_cluster.sh --cluster leonardo
+source .cluster/low_data.env
+```
+
+Then submit the formal Split-A rerun; this creates the complete Stage-A → Stage-B → finalizer
+dependency chain without changing the grid protocol:
+
+```bash
+cd /leonardo_work/EUHPC_D35_005/ze/openpi
+source .cluster/low_data.env
+
+MAX_CONCURRENT=8 scripts/submit_low_data_experiment_slurm.sh --cluster leonardo \
+  examples/low_data/configs/libero_main_18source_22target.json
+```
+
+The selected profile can be inspected before submission with
+`source scripts/low_data_cluster_profiles.sh && load_low_data_cluster_profile leonardo && env | grep
+-E '^(OPENPI|SLURM|LIBERO|HF_)'`.
 
 ### Hortense submission
 

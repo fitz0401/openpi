@@ -60,7 +60,8 @@ fi
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 JOB_TOKEN="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}_${ARRAY_INDEX:-0}"
 JOB_TOKEN=${JOB_TOKEN//[!a-zA-Z0-9_.-]/_}
-JOB_TMPDIR=${JOB_TMPDIR:-${SLURM_TMPDIR:-${TMPDIR:-${VSC_SCRATCH_NODE:-/tmp}}}/${USER}/openpi_low_data_${JOB_TOKEN}}
+JOB_TMP_BASE=${OPENPI_JOB_TMP_ROOT:-${SLURM_TMPDIR:-${TMPDIR:-${VSC_SCRATCH_NODE:-/tmp}}}/${USER}}
+JOB_TMPDIR=${JOB_TMPDIR:-${JOB_TMP_BASE}/openpi_low_data_${JOB_TOKEN}}
 DESCRIPTOR="${JOB_TMPDIR}/low_data_target_train_manifest.json"
 mkdir -p "${JOB_TMPDIR}"
 
