@@ -140,7 +140,9 @@ Stage-B cells retain the formal 12-hour limit. Bootstrap is idempotent and insta
 shared cache if needed. The Leonardo profile omits LeRobot's unused `rerun-sdk` visualization
 dependency because its locked wheel requires a newer glibc than Leonardo; training and evaluation
 do not import it. Environment creation and GPU jobs both load Leonardo's `python/3.11.7` module,
-which provides the development headers required to build LeRobot's `evdev` dependency.
+which provides the development headers required to build LeRobot's `evdev` dependency. Bootstrap
+also prefetches the PaliGemma tokenizer because Leonardo GPU nodes do not provide outbound network
+access during training.
 
 After obtaining the temporary CINECA SSH certificate, initialize the environment in two phases so
 the public LIBERO download uses an authenticated Hugging Face token:

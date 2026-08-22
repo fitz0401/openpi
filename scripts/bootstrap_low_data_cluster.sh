@@ -128,11 +128,12 @@ if [ ! -s "${NORM_STATS}" ]; then
 fi
 
 if [ "${PREFETCH_CHECKPOINT}" = 1 ]; then
-  echo "===== PI0.5 BASE CHECKPOINT ====="
+  echo "===== PI0.5 RUNTIME ASSETS ====="
   uv run python - <<'PY'
 from openpi.shared.download import maybe_download
 
 print(maybe_download("gs://openpi-assets/checkpoints/pi05_base"))
+print(maybe_download("gs://big_vision/paligemma_tokenizer.model", gs={"token": "anon"}))
 PY
 fi
 
