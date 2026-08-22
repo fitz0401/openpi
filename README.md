@@ -137,7 +137,9 @@ large/high-I/O artifacts live under fast scratch:
 The Booster node-local `/tmp` is only 10 GB, so the Leonardo profile deliberately stages transient
 target checkpoints in `$FAST/ze/job_tmp`. Stage A is capped at Leonardo's 24-hour production limit;
 Stage-B cells retain the formal 12-hour limit. Bootstrap is idempotent and installs `uv` into the
-shared cache if needed.
+shared cache if needed. The Leonardo profile omits LeRobot's unused `rerun-sdk` visualization
+dependency because its locked wheel requires a newer glibc than Leonardo; training and evaluation
+do not import it.
 
 After obtaining the temporary CINECA SSH certificate, initialize the environment in two phases so
 the public LIBERO download uses an authenticated Hugging Face token:

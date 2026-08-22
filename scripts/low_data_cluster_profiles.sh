@@ -45,6 +45,9 @@ load_low_data_cluster_profile() {
       export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-0}
       export REQUIRE_HF_AUTH=${REQUIRE_HF_AUTH:-1}
       export OPENPI_INSTALL_UV=${OPENPI_INSTALL_UV:-1}
+      # LeRobot pulls rerun-sdk only for visualization. Its locked Linux wheel
+      # requires glibc 2.31, while Leonardo provides glibc 2.28.
+      export OPENPI_SKIP_RERUN_SDK=${OPENPI_SKIP_RERUN_SDK:-1}
       ;;
     *)
       echo "Unknown cluster '${cluster}'. Expected sofia or leonardo." >&2

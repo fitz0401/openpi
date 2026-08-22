@@ -91,8 +91,15 @@ export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}}
 
 echo "===== REPOSITORY ====="
 git submodule update --init --recursive
-GIT_LFS_SKIP_SMUDGE=1 uv sync --frozen
-GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
+SYNC_ARGS=(--frozen)
+if [ "${OPENPI_SKIP_RERUN_SDK:-0}" = 1 ]; then
+  SYNC_ARGS+=(--no-install-package rerun-sdk)
+  # Prevent later `uv run` calls from trying to restore the deliberately
+  # omitted, unused visualization dependency.
+  export UV_NO_SYNC=1
+fi
+GIT_LFS_SKIP_SMUDGE=1 uv sync "${SYNC_ARGS[@]}"
+GIT_LFS_SKIP_SMUDGE=1 uv pip install --no-deps -e .
 
 echo "===== LIBERO CLIENT ENVIRONMENT ====="
 uv venv --python 3.8 --allow-existing "${LIBERO_VENV}"
@@ -148,6 +155,8 @@ ENV_FILE=${REPO_ROOT}/.cluster/low_data.env
   if [ -n "${OPENPI_CLUSTER:-}" ]; then printf 'export OPENPI_CLUSTER=%q\n' "${OPENPI_CLUSTER}"; fi
   if [ -n "${OPENPI_STORAGE_ROOT:-}" ]; then printf 'export OPENPI_STORAGE_ROOT=%q\n' "${OPENPI_STORAGE_ROOT}"; fi
   if [ -n "${OPENPI_JOB_TMP_ROOT:-}" ]; then printf 'export OPENPI_JOB_TMP_ROOT=%q\n' "${OPENPI_JOB_TMP_ROOT}"; fi
+  if [ -n "${OPENPI_SKIP_RERUN_SDK:-}" ]; then printf 'export OPENPI_SKIP_RERUN_SDK=%q\n' "${OPENPI_SKIP_RERUN_SDK}"; fi
+  if [ -n "${UV_NO_SYNC:-}" ]; then printf 'export UV_NO_SYNC=%q\n' "${UV_NO_SYNC}"; fi
   printf 'export PATH=%q\n' "${PATH}"
   if [ -n "${SLURM_ACCOUNT:-}" ]; then printf 'export SLURM_ACCOUNT=%q\n' "${SLURM_ACCOUNT}"; fi
   if [ -n "${SLURM_PARTITION:-}" ]; then printf 'export SLURM_PARTITION=%q\n' "${SLURM_PARTITION}"; fi
