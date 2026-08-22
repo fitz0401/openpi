@@ -186,6 +186,7 @@ ENV_FILE=${REPO_ROOT}/.cluster/low_data.env
   if [ -n "${SLURM_STAGE_A_GPUS_PER_NODE:-}" ]; then printf 'export SLURM_STAGE_A_GPUS_PER_NODE=%q\n' "${SLURM_STAGE_A_GPUS_PER_NODE}"; fi
   if [ -n "${SLURM_STAGE_A_CPUS_PER_TASK:-}" ]; then printf 'export SLURM_STAGE_A_CPUS_PER_TASK=%q\n' "${SLURM_STAGE_A_CPUS_PER_TASK}"; fi
   if [ -n "${OPENPI_SOURCE_FSDP_DEVICES:-}" ]; then printf 'export OPENPI_SOURCE_FSDP_DEVICES=%q\n' "${OPENPI_SOURCE_FSDP_DEVICES}"; fi
+  if [ -n "${EVAL_MUJOCO_EGL_DEVICE_ID:-}" ]; then printf 'export EVAL_MUJOCO_EGL_DEVICE_ID=%q\n' "${EVAL_MUJOCO_EGL_DEVICE_ID}"; fi
   if [ -n "${SLURM_GPU_MEMORY:-}" ]; then printf 'export SLURM_GPU_MEMORY=%q\n' "${SLURM_GPU_MEMORY}"; fi
   if [ -n "${SLURM_FINALIZE_MEMORY:-}" ]; then printf 'export SLURM_FINALIZE_MEMORY=%q\n' "${SLURM_FINALIZE_MEMORY}"; fi
   if [ -n "${SLURM_STAGE_A_TIME:-}" ]; then printf 'export SLURM_STAGE_A_TIME=%q\n' "${SLURM_STAGE_A_TIME}"; fi

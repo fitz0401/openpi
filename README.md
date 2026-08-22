@@ -74,6 +74,8 @@ experiment JSON remains the scientific protocol.
 
 Sofia uses project `/sofia/projects/2026_start_025`, account
 `zen4-h200-2026_start_025-1`, partition `zen4_h200`, H200 GPUs, and `CUDA/12.8.0`.
+Both Stage-A and Stage-B rollout evaluation use Sofia's validated software-EGL fallback device 9;
+the fallback is hidden from JAX during training.
 
 Install `uv`, clone the repository, and run the idempotent bootstrap once:
 

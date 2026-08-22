@@ -16,6 +16,16 @@ fi
 
 EXPERIMENT_CONFIG=${EXPERIMENT_CONFIG:?Set EXPERIMENT_CONFIG to a low-data JSON config}
 SOURCE_EVAL_ONLY=${SOURCE_EVAL_ONLY:-0}
+EVAL_MAX_ATTEMPTS=${EVAL_MAX_ATTEMPTS:-3}
+if ! [[ "${EVAL_MAX_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EVAL_MAX_ATTEMPTS must be a positive integer; got ${EVAL_MAX_ATTEMPTS}" >&2
+  exit 2
+fi
+EVAL_MUJOCO_EGL_DEVICE_ID=${EVAL_MUJOCO_EGL_DEVICE_ID:-}
+if [ -n "${EVAL_MUJOCO_EGL_DEVICE_ID}" ] && ! [[ "${EVAL_MUJOCO_EGL_DEVICE_ID}" =~ ^[0-9]+$ ]]; then
+  echo "EVAL_MUJOCO_EGL_DEVICE_ID must be an unsigned integer; got ${EVAL_MUJOCO_EGL_DEVICE_ID}" >&2
+  exit 2
+fi
 LIBERO_VENV=${LIBERO_VENV:-${REPO_ROOT}/examples/libero/.venv}
 JOB_TOKEN="${SLURM_JOB_ID:-${PBS_JOBID:-$$}}_${SLURM_ARRAY_TASK_ID:-0}"
 JOB_TOKEN=${JOB_TOKEN//[!a-zA-Z0-9_.-]/_}
@@ -127,11 +137,45 @@ else
   deactivate
 fi
 
+# Keep the software-EGL fallback invisible to JAX training. It is exposed only
+# after training/checkpoint reuse, immediately before the LIBERO rollout client.
+if [ -n "${EVAL_MUJOCO_EGL_DEVICE_ID}" ]; then
+  export MUJOCO_EGL_DEVICE_ID="${EVAL_MUJOCO_EGL_DEVICE_ID}"
+  case ",${CUDA_VISIBLE_DEVICES}," in
+    *,"${EVAL_MUJOCO_EGL_DEVICE_ID}",*) ;;
+    *) export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES},${EVAL_MUJOCO_EGL_DEVICE_ID}" ;;
+  esac
+  echo "Using evaluation-only EGL fallback device ${MUJOCO_EGL_DEVICE_ID}"
+fi
+
 source "${LIBERO_VENV}/bin/activate"
 export PYTHONPATH="${REPO_ROOT}/src:${REPO_ROOT}/third_party/libero:${PYTHONPATH:-}"
-python scripts/low_data_eval.py \
-  --experiment-config "${EXPERIMENT_CONFIG}" \
-  --train-manifest "${DESCRIPTOR}" \
-  --repo-root "${REPO_ROOT}" \
-  --port "${PORT}" \
-  --server-gpu 0
+
+cleanup_orphaned_policy_server() {
+  pkill -TERM -f "[s]cripts/serve_policy.py --port ${PORT}" 2>/dev/null || true
+  sleep 2
+  pkill -KILL -f "[s]cripts/serve_policy.py --port ${PORT}" 2>/dev/null || true
+}
+
+eval_status=1
+for ((attempt = 1; attempt <= EVAL_MAX_ATTEMPTS; attempt++)); do
+  echo "Starting Stage-A evaluation attempt ${attempt}/${EVAL_MAX_ATTEMPTS}"
+  if python scripts/low_data_eval.py \
+    --experiment-config "${EXPERIMENT_CONFIG}" \
+    --train-manifest "${DESCRIPTOR}" \
+    --repo-root "${REPO_ROOT}" \
+    --port "${PORT}" \
+    --server-gpu 0; then
+    eval_status=0
+    break
+  else
+    eval_status=$?
+  fi
+  echo "Stage-A evaluation attempt ${attempt} failed with status ${eval_status}" >&2
+  cleanup_orphaned_policy_server
+done
+
+if [ "${eval_status}" -ne 0 ]; then
+  echo "Stage-A evaluation failed after ${EVAL_MAX_ATTEMPTS} attempts" >&2
+  exit "${eval_status}"
+fi

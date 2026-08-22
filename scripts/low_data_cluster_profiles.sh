@@ -20,6 +20,7 @@ load_low_data_cluster_profile() {
       export SLURM_GPU_MEMORY=${SLURM_GPU_MEMORY:-auto}
       export SLURM_FINALIZE_MEMORY=${SLURM_FINALIZE_MEMORY:-auto}
       export OPENPI_GPU_MODULES=${OPENPI_GPU_MODULES:-CUDA/12.8.0}
+      export EVAL_MUJOCO_EGL_DEVICE_ID=${EVAL_MUJOCO_EGL_DEVICE_ID:-9}
       export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}
       export REQUIRE_HF_AUTH=${REQUIRE_HF_AUTH:-1}
       ;;
