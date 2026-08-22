@@ -122,8 +122,9 @@ selected config.
 
 ### Leonardo: setup and Split-A rerun
 
-Leonardo uses project `EUHPC_D35_005`, GPU partition `boost_usr_prod`, normal QoS, and one A100 GPU
-with eight CPU cores per independent job. Code lives under the persistent work filesystem while
+Leonardo uses project `EUHPC_D35_005`, GPU partition `boost_usr_prod`, and normal QoS. Stage A uses
+two A100 GPUs with FSDP=2 and a fixed global batch of 32; each independent Stage-B job uses one A100
+GPU and eight CPU cores. Code lives under the persistent work filesystem while
 large/high-I/O artifacts live under fast scratch:
 
 ```text

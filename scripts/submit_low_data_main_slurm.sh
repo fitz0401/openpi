@@ -18,6 +18,10 @@ SLURM_GPU_REQUEST_MODE=${SLURM_GPU_REQUEST_MODE:-gres}
 SLURM_GPU_GRES=${SLURM_GPU_GRES:-gpu:1}
 SLURM_GPUS_PER_NODE=${SLURM_GPUS_PER_NODE:-1}
 SLURM_CPUS_PER_GPU=${SLURM_CPUS_PER_GPU:-12}
+SLURM_STAGE_A_GPU_REQUEST_MODE=${SLURM_STAGE_A_GPU_REQUEST_MODE:-${SLURM_GPU_REQUEST_MODE}}
+SLURM_STAGE_A_GPU_GRES=${SLURM_STAGE_A_GPU_GRES:-${SLURM_GPU_GRES}}
+SLURM_STAGE_A_GPUS_PER_NODE=${SLURM_STAGE_A_GPUS_PER_NODE:-${SLURM_GPUS_PER_NODE}}
+SLURM_STAGE_A_CPUS_PER_TASK=${SLURM_STAGE_A_CPUS_PER_TASK:-${SLURM_CPUS_PER_GPU}}
 SLURM_GPU_MEMORY=${SLURM_GPU_MEMORY:-125G}
 SLURM_FINALIZE_MEMORY=${SLURM_FINALIZE_MEMORY:-16G}
 SLURM_STAGE_A_TIME=${SLURM_STAGE_A_TIME:-48:00:00}
@@ -91,6 +95,19 @@ case "${SLURM_GPU_REQUEST_MODE}" in
     exit 2
     ;;
 esac
+STAGE_A_GPU_REQUEST_ARGS=()
+case "${SLURM_STAGE_A_GPU_REQUEST_MODE}" in
+  gres)
+    STAGE_A_GPU_REQUEST_ARGS+=(--ntasks=1 --gres="${SLURM_STAGE_A_GPU_GRES}")
+    ;;
+  gpus_per_node)
+    STAGE_A_GPU_REQUEST_ARGS+=(--gpus-per-node="${SLURM_STAGE_A_GPUS_PER_NODE}" --ntasks-per-gpu=1)
+    ;;
+  *)
+    echo "SLURM_STAGE_A_GPU_REQUEST_MODE must be gres or gpus_per_node." >&2
+    exit 2
+    ;;
+esac
 GPU_MEMORY_ARGS=()
 if [ -n "${SLURM_GPU_MEMORY}" ] && [ "${SLURM_GPU_MEMORY}" != auto ]; then
   GPU_MEMORY_ARGS+=(--mem="${SLURM_GPU_MEMORY}")
@@ -107,6 +124,16 @@ GPU_COMMON=(
   --cpus-per-task="${SLURM_CPUS_PER_GPU}"
   --partition="${SLURM_PARTITION}"
   "${GPU_REQUEST_ARGS[@]}"
+  "${GPU_MEMORY_ARGS[@]}"
+  "${ACCOUNT_ARGS[@]}"
+  "${QOS_ARGS[@]}"
+  "${CONSTRAINT_ARGS[@]}"
+)
+STAGE_A_GPU_COMMON=(
+  --nodes=1
+  --cpus-per-task="${SLURM_STAGE_A_CPUS_PER_TASK}"
+  --partition="${SLURM_PARTITION}"
+  "${STAGE_A_GPU_REQUEST_ARGS[@]}"
   "${GPU_MEMORY_ARGS[@]}"
   "${ACCOUNT_ARGS[@]}"
   "${QOS_ARGS[@]}"
@@ -135,10 +162,11 @@ fi
 echo "Submitting ${SPLIT_ID}: ${NUM_SOURCE} source tasks -> ${NUM_TARGET} targets / ${GRID_SIZE} Stage-B cells."
 echo "Evaluation=${EVAL_PROTOCOL_ID}; concurrency=${MAX_CONCURRENT}."
 echo "GPU partition=${SLURM_PARTITION} request_mode=${SLURM_GPU_REQUEST_MODE} CPUs/GPU=${SLURM_CPUS_PER_GPU}."
+echo "Stage A request_mode=${SLURM_STAGE_A_GPU_REQUEST_MODE} GPU=${SLURM_STAGE_A_GPU_GRES:-${SLURM_STAGE_A_GPUS_PER_NODE}} CPUs=${SLURM_STAGE_A_CPUS_PER_TASK} FSDP=${OPENPI_SOURCE_FSDP_DEVICES:-1}."
 echo "Stage-B submission contains ${SUBMITTED_STAGE_B_CELLS} cells: ${ARRAY_RANGE}."
 
 STAGE_A_JOB_ID=$(sbatch --parsable \
-  "${GPU_COMMON[@]}" \
+  "${STAGE_A_GPU_COMMON[@]}" \
   --job-name="ld_A_${SPLIT_ID}" \
   --time="${SLURM_STAGE_A_TIME}" \
   --output="${REPO_ROOT}/job_record/%x.%j.out" \
@@ -180,6 +208,7 @@ uv run python - "${RESULTS_DIR}/submission_manifest.json" "${EXPERIMENT_CONFIG}"
   "${SLURM_STAGE_A_TIME}" "${SLURM_STAGE_B_TIME}" "${SUBMITTED_STAGE_B_CELLS}" <<'PY'
 import datetime
 import json
+import os
 import pathlib
 import sys
 
@@ -209,6 +238,11 @@ path.write_text(
             "slurm_account": sys.argv[10] or None,
             "stage_a_walltime": sys.argv[11],
             "stage_b_walltime": sys.argv[12],
+            "stage_a_gpu_request": os.environ.get("SLURM_STAGE_A_GPU_GRES")
+            or os.environ.get("SLURM_STAGE_A_GPUS_PER_NODE"),
+            "stage_a_cpus_per_task": int(os.environ.get("SLURM_STAGE_A_CPUS_PER_TASK", "0")) or None,
+            "stage_a_fsdp_devices": int(os.environ.get("OPENPI_SOURCE_FSDP_DEVICES", "1")),
+            "stage_b_gpu_request": os.environ.get("SLURM_GPU_GRES") or os.environ.get("SLURM_GPUS_PER_NODE"),
         },
         indent=2,
     )

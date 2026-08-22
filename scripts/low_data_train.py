@@ -10,6 +10,7 @@ import argparse
 import dataclasses
 import json
 import logging
+import os
 import pathlib
 import shutil
 import sys
@@ -75,6 +76,9 @@ def _write_json(path: pathlib.Path, payload: dict) -> None:
 
 def _build_source(args: argparse.Namespace, experiment, meta: LeRobotDatasetMetadata):
     base = _config.get_config(METHOD_CONFIGS["full"])
+    source_fsdp_devices = int(os.environ.get("OPENPI_SOURCE_FSDP_DEVICES", base.fsdp_devices))
+    if source_fsdp_devices < 1:
+        raise ValueError(f"OPENPI_SOURCE_FSDP_DEVICES must be positive, got {source_fsdp_devices}")
     source_refs = experiment.source_task_refs()
     task_strings = resolve_task_refs(meta, experiment, source_refs)
     episode_indices = sorted(
@@ -107,6 +111,7 @@ def _build_source(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         keep_period=None,
         overwrite=True,
         resume=False,
+        fsdp_devices=source_fsdp_devices,
     )
     metadata = {
         "schema_version": 1,
@@ -120,6 +125,7 @@ def _build_source(args: argparse.Namespace, experiment, meta: LeRobotDatasetMeta
         "target_tasks": [dataclasses.asdict(ref) for ref in experiment.target_task_refs()],
         "base_checkpoint": experiment.base_checkpoint,
         "method": "full",
+        "fsdp_devices": source_fsdp_devices,
         "seed": args.seed,
         "episode_indices": episode_indices,
         **stats,
